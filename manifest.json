@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "io.github.robinnepomukmai.openvpn",
-  "name": "OpenVPN",
+  "id": "io.github.robinnepomukmai.vpn",
+  "name": "VPN",
   "version": "1.0.0",
   "author": "Robin Mai",
   "license": "MIT",
-  "description": "Toggle an OpenVPN tunnel from the bar and see throughput, connection details and profiles in a popup.",
+  "description": "Toggle OpenVPN, WireGuard or GlobalProtect from the bar and see throughput, connection details and profiles in a popup.",
   "kinds": [
     "bar-widget"
   ],
@@ -13,8 +13,8 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "OpenVPN",
-    "description": "Toggle the tunnel, watch throughput and connection details, import and manage profiles.",
+    "displayName": "VPN",
+    "description": "Toggle the tunnel, watch throughput and connection details, import and manage profiles. Supports OpenVPN, WireGuard and GlobalProtect.",
     "category": "Network",
     "allowMultiple": true,
     "defaultSection": "right",
@@ -23,14 +23,27 @@
       "intervalSec": 5,
       "showRate": false,
       "highlightWhenConnected": false,
-      "hideWhenDisconnected": false
+      "hideWhenDisconnected": false,
+      "backend": "openvpn"
     },
     "schema": [
+      {
+        "key": "backend",
+        "type": "enum",
+        "label": "VPN type",
+        "description": "Which VPN this instance controls. WireGuard covers both wg-quick units and NetworkManager connections. GlobalProtect can be watched and disconnected; connecting hands off to a terminal because the login is interactive.",
+        "options": [
+          "openvpn",
+          "wireguard",
+          "globalprotect"
+        ],
+        "defaultValue": "openvpn"
+      },
       {
         "key": "profile",
         "type": "string",
         "label": "Profile",
-        "description": "Name of the openvpn-client@<profile>.service instance this widget controls.",
+        "description": "OpenVPN: the openvpn-client@<profile> instance. WireGuard: the interface or NetworkManager connection name. GlobalProtect: the portal server, or empty to open the GUI.",
         "defaultValue": "work"
       },
       {

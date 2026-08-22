@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
-"""Privileged helper for the Omarchy OpenVPN widget.
+"""Privileged helper for the Omarchy VPN widget.
 
 Runs as root through pkexec (action org.omarchy.vpnadmin.manage) and is the
-only thing that writes under /etc/openvpn/client. Everything the panel merely
-needs to read lands in the cache at /var/lib/omarchy-vpn/profiles.json, so
-listing profiles never raises an auth dialog.
+only thing that writes under /etc/openvpn/client and /etc/wireguard. Everything
+the panel merely needs to read lands in the cache at
+/var/lib/omarchy-vpn/profiles.json, so listing profiles never raises an auth
+dialog.
 
-  refresh                       rewrite the cache
-  list                          rewrite the cache and print it
-  import <source> <name>        install an .ovpn/.conf as profile <name>
-  remove <name>                 delete a profile and its credentials
-  credentials <name>            username and password from stdin (two lines)
-  autostart <name> on|off       systemctl enable/disable
+NetworkManager-owned WireGuard connections are none of this helper's business:
+nmcli lists and switches them without root.
+
+  refresh                                  rewrite the cache
+  list                                     rewrite the cache and print it
+  import <backend> <source> <name>         install a config as profile <name>
+  remove <backend> <name>                  delete a profile and its credentials
+  credentials <backend> <name>             username and password from stdin
+  autostart <backend> <name> on|off        systemctl enable/disable
+
+<backend> is openvpn or wireguard.
 """
 
 import json
@@ -24,11 +30,37 @@ import sys
 import tempfile
 import time
 
-CLIENT_DIR = "/etc/openvpn/client"
 CACHE_DIR = "/var/lib/omarchy-vpn"
 CACHE = os.path.join(CACHE_DIR, "profiles.json")
 
+# Everything that differs between the two config-file backends, in one place.
+BACKENDS = {
+    "openvpn": {
+        "dir": "/etc/openvpn/client",
+        "suffix": ".conf",
+        "unit": "openvpn-client@%s.service",
+        "group": "network",
+        "mode": 0o640,
+        "marker": "remote ",
+        "marker_hint": "no remote line — that is not an OpenVPN config",
+    },
+    "wireguard": {
+        "dir": "/etc/wireguard",
+        "suffix": ".conf",
+        "unit": "wg-quick@%s.service",
+        "group": None,
+        # wg-quick complains loudly about world-readable configs, and the file
+        # holds the private key.
+        "mode": 0o600,
+        "marker": "[Interface]",
+        "marker_hint": "no [Interface] section — that is not a WireGuard config",
+    },
+}
+
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+# wg-quick derives the interface name from the file name, and the kernel caps
+# interface names at 15 characters.
+WG_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,14}$")
 
 
 def die(msg, code=1):
@@ -41,10 +73,17 @@ def require_root():
         die("must run as root — invoke through pkexec")
 
 
-def check_name(name):
+def check_backend(name):
+    if name not in BACKENDS:
+        die("unknown backend %r (expected openvpn or wireguard)" % name)
+    return name
+
+
+def check_name(backend, name):
     # The name ends up in file paths and in a systemd instance name. Allow only
     # unremarkable characters instead of escaping later.
-    if not NAME_RE.match(name) or ".." in name:
+    pattern = WG_NAME_RE if backend == "wireguard" else NAME_RE
+    if not pattern.match(name) or ".." in name:
         die("invalid profile name: %r" % name)
     return name
 
@@ -62,7 +101,7 @@ def read_as_caller(path):
     """Read the source file with the caller's privileges.
 
     Otherwise anyone allowed to run this helper could have arbitrary root-owned
-    files copied into /etc/openvpn/client.
+    files copied into a config directory.
     """
     uid = caller_uid()
     if uid is None:
@@ -81,6 +120,8 @@ def read_as_caller(path):
 
 
 def group_id(name, fallback=0):
+    if not name:
+        return fallback
     try:
         import grp
         return grp.getgrnam(name).gr_gid
@@ -92,50 +133,91 @@ def systemctl(*args):
     return subprocess.run(["systemctl", *args], capture_output=True, text=True)
 
 
-def parse_profile(path, name):
-    """Pull only the fields the panel displays — never anything secret."""
+def parse_openvpn(path, name):
     remote, port, proto = "", "", ""
-    try:
-        with open(path, "r", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if line.startswith("remote ") and not remote:
-                    parts = line.split()
-                    remote = parts[1] if len(parts) > 1 else ""
-                    if len(parts) > 2:
-                        port = parts[2]
-                    if len(parts) > 3:
-                        proto = parts[3]
-                elif line.startswith("proto ") and not proto:
-                    proto = line.split()[1]
-                elif line.startswith("port ") and not port:
-                    port = line.split()[1]
-    except OSError as exc:
-        die("cannot read %s: %s" % (path, exc))
+    for line in read_lines(path):
+        line = line.strip()
+        if line.startswith("remote ") and not remote:
+            parts = line.split()
+            remote = parts[1] if len(parts) > 1 else ""
+            if len(parts) > 2:
+                port = parts[2]
+            if len(parts) > 3:
+                proto = parts[3]
+        elif line.startswith("proto ") and not proto:
+            proto = line.split()[1]
+        elif line.startswith("port ") and not port:
+            port = line.split()[1]
 
     return {
+        "backend": "openvpn",
+        "origin": "systemd",
         "name": name,
         "remote": remote,
         "port": port,
         "proto": proto or "udp",
-        "hasAuth": os.path.isfile(os.path.join(CLIENT_DIR, name, "auth.txt")),
+        "hasAuth": os.path.isfile(os.path.join(BACKENDS["openvpn"]["dir"], name, "auth.txt")),
     }
+
+
+def parse_wireguard(path, name):
+    """Endpoint and allowed IPs of the first peer. Never key material."""
+    remote, port, allowed = "", "", ""
+    for line in read_lines(path):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        lowered = line.lower()
+        if lowered.startswith("endpoint") and "=" in line and not remote:
+            value = line.split("=", 1)[1].strip()
+            head, _, tail = value.rpartition(":")
+            if head and tail.isdigit():
+                remote, port = head, tail
+            else:
+                remote = value
+        elif lowered.startswith("allowedips") and "=" in line and not allowed:
+            allowed = line.split("=", 1)[1].strip()
+
+    return {
+        "backend": "wireguard",
+        "origin": "wg-quick",
+        "name": name,
+        "remote": remote,
+        "port": port,
+        "proto": "wireguard",
+        "allowedIps": allowed,
+        # WireGuard authenticates with keys from the config; there is no
+        # username or password for the panel to ask about.
+        "hasAuth": True,
+    }
+
+
+PARSERS = {"openvpn": parse_openvpn, "wireguard": parse_wireguard}
+
+
+def read_lines(path):
+    try:
+        with open(path, "r", errors="replace") as fh:
+            return fh.readlines()
+    except OSError as exc:
+        die("cannot read %s: %s" % (path, exc))
 
 
 def build_cache():
     profiles = []
-    try:
-        entries = sorted(os.listdir(CLIENT_DIR))
-    except OSError:
-        entries = []
-
-    for entry in entries:
-        if not entry.endswith(".conf"):
+    for backend, spec in BACKENDS.items():
+        try:
+            entries = sorted(os.listdir(spec["dir"]))
+        except OSError:
             continue
-        name = entry[: -len(".conf")]
-        if not NAME_RE.match(name):
-            continue
-        profiles.append(parse_profile(os.path.join(CLIENT_DIR, entry), name))
+        for entry in entries:
+            if not entry.endswith(spec["suffix"]):
+                continue
+            name = entry[: -len(spec["suffix"])]
+            pattern = WG_NAME_RE if backend == "wireguard" else NAME_RE
+            if not pattern.match(name):
+                continue
+            profiles.append(PARSERS[backend](os.path.join(spec["dir"], entry), name))
 
     return {"generated": int(time.time()), "profiles": profiles}
 
@@ -173,10 +255,12 @@ def cmd_list(_args):
 
 
 def cmd_import(args):
-    if len(args) != 2:
-        die("usage: import <source> <name>")
-    source, name = args[0], check_name(args[1])
-    target = os.path.join(CLIENT_DIR, name + ".conf")
+    if len(args) != 3:
+        die("usage: import <backend> <source> <name>")
+    backend = check_backend(args[0])
+    spec = BACKENDS[backend]
+    source, name = args[1], check_name(backend, args[2])
+    target = os.path.join(spec["dir"], name + spec["suffix"])
 
     if os.path.exists(target):
         die("profile %r already exists" % name)
@@ -187,26 +271,31 @@ def cmd_import(args):
     except UnicodeDecodeError:
         die("%s is not a text file" % source)
 
-    if "remote " not in text:
-        die("%s has no remote line — that is not an OpenVPN config" % source)
+    if spec["marker"] not in text:
+        die("%s has %s" % (source, spec["marker_hint"]))
 
-    # A bare `auth-user-pass` prompts interactively and makes the unit fail
-    # immediately. Point it at the file `credentials` writes, otherwise the
-    # imported profile is unusable headless.
-    lines, rewritten = [], False
-    for line in text.splitlines():
-        if line.strip() == "auth-user-pass":
-            lines.append("auth-user-pass %s/auth.txt" % name)
-            rewritten = True
-        else:
-            lines.append(line)
+    lines, rewritten = text.splitlines(), False
+    if backend == "openvpn":
+        # A bare `auth-user-pass` prompts interactively and makes the unit fail
+        # immediately. Point it at the file `credentials` writes, otherwise the
+        # imported profile is unusable headless.
+        rebuilt = []
+        for line in lines:
+            if line.strip() == "auth-user-pass":
+                rebuilt.append("auth-user-pass %s/auth.txt" % name)
+                rewritten = True
+            else:
+                rebuilt.append(line)
+        lines = rebuilt
 
-    fd, tmp = tempfile.mkstemp(dir=CLIENT_DIR, prefix=".import-")
+    os.makedirs(spec["dir"], mode=0o700 if backend == "wireguard" else 0o750, exist_ok=True)
+
+    fd, tmp = tempfile.mkstemp(dir=spec["dir"], prefix=".import-")
     try:
         with os.fdopen(fd, "w") as fh:
             fh.write("\n".join(lines) + "\n")
-        os.chown(tmp, 0, group_id("network"))
-        os.chmod(tmp, 0o640)
+        os.chown(tmp, 0, group_id(spec["group"]))
+        os.chmod(tmp, spec["mode"])
         os.replace(tmp, target)
     except BaseException:
         if os.path.exists(tmp):
@@ -214,35 +303,41 @@ def cmd_import(args):
         raise
 
     if rewritten:
-        os.makedirs(os.path.join(CLIENT_DIR, name), mode=0o700, exist_ok=True)
+        os.makedirs(os.path.join(spec["dir"], name), mode=0o700, exist_ok=True)
 
     write_cache()
     print("imported: %s%s" % (name, " (auth-user-pass rewritten)" if rewritten else ""))
 
 
 def cmd_remove(args):
-    if len(args) != 1:
-        die("usage: remove <name>")
-    name = check_name(args[0])
-    conf = os.path.join(CLIENT_DIR, name + ".conf")
+    if len(args) != 2:
+        die("usage: remove <backend> <name>")
+    backend = check_backend(args[0])
+    spec = BACKENDS[backend]
+    name = check_name(backend, args[1])
+    conf = os.path.join(spec["dir"], name + spec["suffix"])
     if not os.path.exists(conf):
         die("profile %r does not exist" % name)
 
-    unit = "openvpn-client@%s.service" % name
+    unit = spec["unit"] % name
     systemctl("stop", unit)
     systemctl("disable", unit)
 
     os.unlink(conf)
-    shutil.rmtree(os.path.join(CLIENT_DIR, name), ignore_errors=True)
+    shutil.rmtree(os.path.join(spec["dir"], name), ignore_errors=True)
     write_cache()
     print("removed: %s" % name)
 
 
 def cmd_credentials(args):
-    if len(args) != 1:
-        die("usage: credentials <name> (username and password on stdin)")
-    name = check_name(args[0])
-    if not os.path.exists(os.path.join(CLIENT_DIR, name + ".conf")):
+    if len(args) != 2:
+        die("usage: credentials <backend> <name> (username and password on stdin)")
+    backend = check_backend(args[0])
+    if backend != "openvpn":
+        die("%s profiles have no username/password credentials" % backend)
+    spec = BACKENDS[backend]
+    name = check_name(backend, args[1])
+    if not os.path.exists(os.path.join(spec["dir"], name + spec["suffix"])):
         die("profile %r does not exist" % name)
 
     user = sys.stdin.readline().rstrip("\n")
@@ -250,7 +345,7 @@ def cmd_credentials(args):
     if not user or not password:
         die("username or password empty")
 
-    profile_dir = os.path.join(CLIENT_DIR, name)
+    profile_dir = os.path.join(spec["dir"], name)
     os.makedirs(profile_dir, mode=0o700, exist_ok=True)
     os.chmod(profile_dir, 0o700)
 
@@ -265,14 +360,15 @@ def cmd_credentials(args):
 
 
 def cmd_autostart(args):
-    if len(args) != 2 or args[1] not in ("on", "off"):
-        die("usage: autostart <name> on|off")
-    name = check_name(args[0])
-    unit = "openvpn-client@%s.service" % name
-    result = systemctl("enable" if args[1] == "on" else "disable", unit)
+    if len(args) != 3 or args[2] not in ("on", "off"):
+        die("usage: autostart <backend> <name> on|off")
+    backend = check_backend(args[0])
+    name = check_name(backend, args[1])
+    unit = BACKENDS[backend]["unit"] % name
+    result = systemctl("enable" if args[2] == "on" else "disable", unit)
     if result.returncode != 0:
         die(result.stderr.strip() or "systemctl failed")
-    print("autostart for %s: %s" % (name, args[1]))
+    print("autostart for %s: %s" % (name, args[2]))
 
 
 COMMANDS = {

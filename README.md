@@ -1,8 +1,20 @@
-# OpenVPN for Omarchy
+# VPN for Omarchy
 
-A bar widget for `openvpn-client@<profile>.service`. Toggle the tunnel from the
-bar, and open a popup for live throughput, connection details and profile
+A bar widget for OpenVPN, WireGuard and GlobalProtect. Toggle the tunnel from
+the bar, and open a popup for live throughput, connection details and profile
 management.
+
+| Backend | Connect / disconnect | Profile list | Autostart | Import | Credentials |
+|---|---|---|---|---|---|
+| **OpenVPN** (`openvpn-client@`) | yes | `/etc/openvpn/client` | yes | yes | yes |
+| **WireGuard** (`wg-quick@` and NetworkManager) | yes | `/etc/wireguard` + `nmcli` | yes | yes | n/a — keys live in the config |
+| **GlobalProtect** (`gpclient`) | disconnect yes, connect hands off | no | no | no | n/a — SSO |
+
+GlobalProtect is deliberately the thin one. `gpclient` has no status command,
+no systemd unit and an interactive SSO login, so the widget watches it, can take
+it down, and hands connecting to a terminal or the vendor GUI. Everything that
+comes off the tunnel interface — address, routes, uptime, throughput — works the
+same for all three.
 
 ![Preview](preview.png)
 
@@ -12,15 +24,17 @@ management.
   interface and MTU, uptime, pushed routes.
 - **Throughput** — a sparkline over the last 60 samples plus current rate and
   session totals, read straight from `/sys/class/net/<iface>/statistics`.
-- **Profiles** — every config under `/etc/openvpn/client` with its state, click
-  to connect or switch, per-profile autostart, credentials and removal.
+- **Profiles** — every config the backend knows about with its state, click to
+  connect or switch, per-profile autostart, credentials and removal. WireGuard
+  lists `wg-quick` units and NetworkManager connections side by side and
+  switches each the right way.
 - **Import** — pick an `.ovpn` file and install it as a named profile.
 
 ## Requirements
 
 | Needs | Why |
 |---|---|
-| `openvpn` with the `openvpn-client@.service` template | the thing being controlled |
+| one of: `openvpn`, `wireguard-tools` (for `wg-quick@`), NetworkManager ≥ 1.16 (for WireGuard connections), `globalprotect-openconnect` | whichever backend you use |
 | `bash`, `systemctl`, `ip`, `journalctl`, `cat` | reading status, addresses, routes and the connection log |
 | membership in a group that can read the system journal (usually `wheel`) | server endpoint and cipher come from the journal |
 | `zenity` | the file dialog for importing a config |
@@ -32,14 +46,17 @@ Reading the journal is optional in practice: without it the panel simply shows
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/robinnepomukmai/omarchy-openvpn.git --enable
+omarchy plugin add https://github.com/robinnepomukmai/omarchy-vpn.git --enable
 ```
 
-Then set the profile the bar icon controls:
+Then point the widget at a VPN:
 
 ```bash
-omarchy bar set io.github.robinnepomukmai.openvpn profile work
+omarchy bar set io.github.robinnepomukmai.vpn backend openvpn
+omarchy bar set io.github.robinnepomukmai.vpn profile work
 ```
+
+`allowMultiple` is on, so a second instance can watch a different backend.
 
 ## Privilege boundary
 
@@ -49,7 +66,9 @@ uses `systemctl start/stop`, which polkit will ask about unless you have a rule
 for it (see below).
 
 **Profile management is the exception.** `/etc/openvpn/client` is `750
-openvpn:network`, so listing, importing or removing configs needs root. That is
+openvpn:network` and `/etc/wireguard` is root-only, so listing, importing or
+removing those configs needs root. NetworkManager-owned WireGuard connections
+skip all of this — `nmcli` lists them unprivileged and polkit governs the rest. That is
 what `system/install.sh` sets up, and it is a deliberate, separate, manual step —
 `omarchy plugin add` never runs installers or `sudo`, and this plugin does not
 either. Without it the panel stays fully usable and the profile section says so.
@@ -57,14 +76,14 @@ either. Without it the panel stays fully usable and the profile section says so.
 Read the script before running it:
 
 ```bash
-sudo bash ~/.config/omarchy/plugins/io.github.robinnepomukmai.openvpn/system/install.sh
+sudo bash ~/.config/omarchy/plugins/io.github.robinnepomukmai.vpn/system/install.sh
 ```
 
 | Path | What it is |
 |---|---|
-| `/usr/local/bin/omarchy-vpn-admin` | the only thing that writes under `/etc/openvpn/client`; `root:root 0755` |
+| `/usr/local/bin/omarchy-vpn-admin` | the only thing that writes under `/etc/openvpn/client` and `/etc/wireguard`; `root:root 0755` |
 | `/usr/share/polkit-1/actions/org.omarchy.vpnadmin.policy` | action `org.omarchy.vpnadmin.manage`, `auth_admin_keep` |
-| `/etc/systemd/system/omarchy-vpn-cache.{path,service}` | regenerates the cache when the config directory changes |
+| `/etc/systemd/system/omarchy-vpn-cache.{path,service}` | regenerates the cache when either config directory changes |
 | `/var/lib/omarchy-vpn/profiles.json` | the profile list the panel reads; `root:wheel 0640` |
 
 Two things worth knowing about the helper:
@@ -72,26 +91,29 @@ Two things worth knowing about the helper:
 - On import it reads the source file **with the calling user's privileges**
   (`setresuid` around the read). Otherwise anyone allowed to run the helper
   could have arbitrary root-owned files copied into `/etc/openvpn/client`.
-- The cache holds name, remote, port, protocol and whether credentials exist —
-  never key material or passwords.
+- The cache holds name, remote, port, protocol, allowed IPs and whether
+  credentials exist — never key material or passwords. WireGuard private keys
+  are read past, never copied out.
 
 Remove all of it again with:
 
 ```bash
 sudo bash .../system/install.sh --uninstall
-omarchy plugin remove io.github.robinnepomukmai.openvpn
+omarchy plugin remove io.github.robinnepomukmai.vpn
 ```
 
 ### Connecting without a password prompt
 
-`systemctl start openvpn-client@<profile>` is a privileged action. To let your
+`systemctl start openvpn-client@<profile>` (and `wg-quick@<name>`) is a
+privileged action. To let your
 user do it without an auth dialog, add a polkit rule — for example
 `/etc/polkit-1/rules.d/49-openvpn-client.rules`:
 
 ```javascript
 polkit.addRule(function (action, subject) {
   if (action.id == "org.freedesktop.systemd1.manage-units" &&
-      action.lookup("unit").indexOf("openvpn-client@") == 0 &&
+      (action.lookup("unit").indexOf("openvpn-client@") == 0 ||
+       action.lookup("unit").indexOf("wg-quick@") == 0) &&
       subject.isInGroup("wheel")) {
     return polkit.Result.YES;
   }
@@ -116,27 +138,26 @@ Without it, connecting raises the shell's polkit dialog. That works fine too.
 A keybinding for the tunnel, in `~/.config/hypr/bindings.lua`:
 
 ```lua
-o.bind("SUPER + ALT + V", "VPN toggle", "omarchy-shell io.github.robinnepomukmai.openvpn toggleVpn")
+o.bind("SUPER + ALT + V", "VPN toggle", "omarchy-shell io.github.robinnepomukmai.vpn toggleVpn")
 ```
 
 ## Settings
 
-`omarchy bar set io.github.robinnepomukmai.openvpn <key> <value>`
+`omarchy bar set io.github.robinnepomukmai.vpn <key> <value>`
 
 | Key | Default | Effect |
 |---|---|---|
-| `profile` | `work` | which `openvpn-client@` instance the icon controls |
+| `backend` | `openvpn` | `openvpn`, `wireguard` or `globalprotect` |
+| `profile` | `work` | OpenVPN: the `openvpn-client@` instance. WireGuard: interface or NM connection name. GlobalProtect: the portal server, or empty for the GUI |
 | `intervalSec` | `5` | status interval while idle |
 | `showRate` | `false` | throughput next to the icon in the bar |
 | `highlightWhenConnected` | `false` | connected in the accent colour instead of plain |
 | `hideWhenDisconnected` | `false` | hide the icon while the tunnel is down |
 
-`allowMultiple` is on, so you can place one instance per profile.
-
 ## IPC
 
 ```
-omarchy-shell io.github.robinnepomukmai.openvpn <method> [profile]
+omarchy-shell io.github.robinnepomukmai.vpn <method> [profile]
 ```
 
 | Method | Does |

@@ -15,8 +15,8 @@ import "Model.js" as Model
 // usable; only the profile section says what is missing.
 Panel {
   id: root
-  moduleName: "io.github.robinnepomukmai.openvpn"
-  ipcTarget: "io.github.robinnepomukmai.openvpn"
+  moduleName: "io.github.robinnepomukmai.vpn"
+  ipcTarget: "io.github.robinnepomukmai.vpn"
   manageIpc: false
 
   // Lets peer instances on other monitors reach this one's state.
@@ -37,11 +37,12 @@ Panel {
   property string importName: ""
   property string credentialsProfile: ""
   property string removeTarget: ""
+  property string removeOrigin: ""
   property int profileIndex: 0
   property bool cursorActive: false
 
   readonly property string barTooltip: {
-    var base = "VPN " + vpn.profile + " " + vpn.stateLabel
+    var base = root.caps.label + (vpn.profile ? " " + vpn.profile : "") + " " + vpn.stateLabel
     if (vpn.connected) return base + " · " + vpn.address
     if (vpn.failed) return base + " · right-click to retry"
     return base + " · right-click to connect"
@@ -77,6 +78,7 @@ Panel {
     importName = ""
     credentialsProfile = ""
     removeTarget = ""
+    removeOrigin = ""
   }
 
   function moveCursor(dy) {
@@ -88,14 +90,19 @@ Panel {
   function activateCursor() {
     if (!cursorActive || vpn.profiles.length === 0) return
     var p = vpn.profiles[profileIndex]
-    if (p) p.name === vpn.profile ? vpn.toggle() : vpn.switchTo(p.name, "up")
+    if (p) p.name === vpn.profile ? vpn.toggle() : vpn.switchTo(p.name, p.origin, "up")
   }
 
   Service {
     id: vpn
     settings: root.settings
     detailed: root.opened
+    bar: root.bar
   }
+
+  // What this backend can actually do. Drives which controls exist at all —
+  // GlobalProtect has no profile list, WireGuard has no password to type.
+  readonly property var caps: vpn.caps
 
   Connections {
     target: vpn
@@ -235,7 +242,7 @@ Panel {
         var key = String(t).toLowerCase()
         if (key === "v") vpn.toggle()
         else if (key === "r") { vpn.refresh(); vpn.refreshDetails(); vpn.refreshProfiles() }
-        else if (key === "n") vpn.pickConfigFile()
+        else if (key === "n" && root.caps.canImport) vpn.pickConfigFile()
       }
 
       Flickable {
@@ -262,8 +269,8 @@ Panel {
             PanelHero {
               id: hero
               width: parent.width
-              title: "OpenVPN"
-              meta: vpn.profile + " · " + vpn.stateLabel
+              title: root.caps.label
+              meta: (vpn.profile ? vpn.profile + " · " : "") + vpn.stateLabel
               detail: vpn.connected ? "up " + Model.duration(vpn.uptimeSeconds) : ""
               foreground: root.foreground
               fontFamily: root.fontFamily
@@ -310,7 +317,8 @@ Panel {
 
             InfoPair {
               label: "Server"
-              value: vpn.server || (root.currentProfile ? root.currentProfile.remote : "") || "—"
+              value: vpn.server || (root.currentProfile ? root.currentProfile.remote : "")
+                     || (vpn.backendName === "globalprotect" ? vpn.profile : "") || "—"
             }
             InfoPair {
               label: "Protocol"
@@ -319,7 +327,17 @@ Panel {
                        + (root.currentProfile.port ? " / " + root.currentProfile.port : "")
                      : "—"
             }
-            InfoPair { label: "Cipher"; value: vpn.cipher || "—" }
+            InfoPair {
+              visible: root.caps.hasCipher
+              label: "Cipher"
+              value: vpn.cipher || "—"
+            }
+            InfoPair {
+              visible: vpn.backendName === "wireguard" && root.currentProfile
+                       && root.currentProfile.allowedIps
+              label: "Allowed IPs"
+              value: root.currentProfile ? String(root.currentProfile.allowedIps || "") : ""
+            }
             InfoPair { label: "Tunnel IP"; value: vpn.address || "—" }
             InfoPair {
               label: "Interface"
@@ -405,13 +423,29 @@ Panel {
             spacing: Style.space(6)
 
             PanelSectionHeader {
-              text: "PROFILES"
+              text: root.caps.profileLabel.toUpperCase() + "S"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
 
+            // gpclient keeps its portals in the GUI's own config and logs in
+            // over SSO, so there is nothing here to enumerate or drive.
             Text {
-              visible: !vpn.helperInstalled
+              visible: !root.caps.canList
+              width: parent.width
+              text: vpn.profile
+                    ? "Portal " + vpn.profile + ". Connecting opens a terminal for the SSO login; "
+                      + "the widget takes it from there."
+                    : "No portal configured. Connecting opens the GlobalProtect GUI. Set one with "
+                      + "`omarchy bar set io.github.robinnepomukmai.vpn profile <portal>`."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
+
+            Text {
+              visible: root.caps.canList && !vpn.helperInstalled
               width: parent.width
               text: "Profile management is not set up — run system/install.sh from the plugin "
                     + "directory with sudo. Everything else works without it."
@@ -422,24 +456,32 @@ Panel {
             }
 
             Text {
-              visible: vpn.helperInstalled && vpn.profiles.length === 0
+              visible: root.caps.canList && vpn.helperInstalled && vpn.profiles.length === 0
               width: parent.width
-              text: "No profiles in /etc/openvpn/client."
+              text: vpn.backendName === "wireguard"
+                    ? "No interfaces in /etc/wireguard and none in NetworkManager."
+                    : "No profiles in /etc/openvpn/client."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
             }
 
             Repeater {
-              model: vpn.profiles
+              model: root.caps.canList ? vpn.profiles : []
 
               ProfileRow {
                 width: column.width
                 hasCursor: root.cursorActive && root.profileIndex === index
-                onActivated: profile.name === vpn.profile ? vpn.toggle() : vpn.switchTo(profile.name, "up")
-                onAutostartToggled: vpn.setAutostart(profile.name, !profile.autostart)
+                onActivated: profile.name === vpn.profile
+                             ? vpn.toggle()
+                             : vpn.switchTo(profile.name, profile.origin, "up")
+                onAutostartToggled: vpn.setAutostart(profile.name, profile.origin, !profile.autostart)
                 onCredentialsRequested: { root.closeForms(); root.credentialsProfile = profile.name }
-                onRemoveRequested: { root.closeForms(); root.removeTarget = profile.name }
+                onRemoveRequested: {
+                  root.closeForms()
+                  root.removeTarget = profile.name
+                  root.removeOrigin = profile.origin
+                }
                 onHoveredChanged: if (hovered) { root.cursorActive = true; root.profileIndex = index }
               }
             }
@@ -447,11 +489,22 @@ Panel {
 
           // ── Actions ─────────────────────────────────────────────────────
           Row {
-            visible: vpn.helperInstalled
             width: parent.width
             spacing: Style.spacing.controlGap
 
+            // GlobalProtect cannot be driven headlessly, so this hands off to
+            // a terminal or the vendor GUI rather than pretending otherwise.
             Button {
+              visible: root.caps.connectNeedsTerminal && !vpn.connected
+              text: vpn.profile ? "Connect in terminal" : "Open GlobalProtect"
+              iconText: "󰖂"
+              bordered: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: vpn.connect()
+            }
+            Button {
+              visible: vpn.helperInstalled && root.caps.canImport
               text: "Add config"
               iconText: "󰐕"
               bordered: true
@@ -520,7 +573,7 @@ Panel {
 
           // ── Credentials form ────────────────────────────────────────────
           Column {
-            visible: root.credentialsProfile !== ""
+            visible: root.credentialsProfile !== "" && root.caps.canCredentials
             width: parent.width
             spacing: Style.space(6)
 
@@ -591,7 +644,7 @@ Panel {
                 bordered: true
                 foreground: root.urgent
                 fontFamily: root.fontFamily
-                onClicked: vpn.removeProfile(root.removeTarget)
+                onClicked: vpn.removeProfile(root.removeTarget, root.removeOrigin)
               }
               Button {
                 text: "Cancel"
@@ -693,6 +746,7 @@ Panel {
       spacing: Style.space(2)
 
       PanelActionButton {
+        visible: root.caps.canAutostart
         iconText: row.profile && row.profile.autostart ? "󰐫" : "󰐪"
         tooltipText: row.profile && row.profile.autostart ? "Disable autostart" : "Enable autostart"
         foreground: row.profile && row.profile.autostart ? root.foreground : root.dim
@@ -701,6 +755,7 @@ Panel {
         onClicked: row.autostartToggled()
       }
       PanelActionButton {
+        visible: root.caps.canCredentials
         iconText: "󰌆"
         tooltipText: "Set credentials"
         foreground: row.profile && row.profile.hasAuth ? root.foreground : root.dim
@@ -742,6 +797,7 @@ Panel {
           var bits = []
           if (row.profile.remote)
             bits.push(row.profile.remote + (row.profile.port ? ":" + row.profile.port : ""))
+          if (row.profile.origin === "nm") bits.push("NetworkManager")
           if (!row.profile.hasAuth) bits.push("no credentials")
           return bits.join("  ·  ")
         }
