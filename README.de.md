@@ -41,7 +41,11 @@ Durchsatz — funktioniert für alle drei gleich.
 - **Verbindung** — Server-Endpunkt, Protokoll und Port, Cipher, Tunnel-IP,
   Interface samt MTU, Laufzeit, gesetzte Routen.
 - **Durchsatz** — Sparkline über die letzten 60 Messpunkte, aktuelle Rate und
-  Sitzungsvolumen, direkt aus `/sys/class/net/<iface>/statistics`.
+  Sitzungsvolumen, direkt aus `/sys/class/net/<iface>/statistics`. WireGuard
+  zählt beide Richtungen. OpenVPN mit **DCO** (Interface-Typ `ovpn`) erhöht den
+  Empfangszähler des Kernels nie — `/proc/net/dev` und `ip -s link` zeigen
+  dasselbe — deshalb steht dort `n/a` statt einer Null, und die Kurve zeichnet
+  nur den Upload.
 - **Profile** — alles, was das Backend kennt, mit Zustand; Klick verbindet oder
   wechselt, dazu Autostart, Zugangsdaten und Entfernen pro Profil. WireGuard
   listet `wg-quick`-Units und NetworkManager-Verbindungen nebeneinander und

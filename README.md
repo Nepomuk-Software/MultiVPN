@@ -37,6 +37,10 @@ same for all three.
   interface and MTU, uptime, pushed routes.
 - **Throughput** — a sparkline over the last 60 samples plus current rate and
   session totals, read straight from `/sys/class/net/<iface>/statistics`.
+  WireGuard reports both directions. OpenVPN built with **DCO** (interface type
+  `ovpn`) never increments the kernel's receive counter — `/proc/net/dev` and
+  `ip -s link` agree — so the panel shows the download side as `n/a` and draws
+  only the upload curve rather than a flat line that would read as "no traffic".
 - **Profiles** — every config the backend knows about with its state, click to
   connect or switch, per-profile autostart, credentials and removal. WireGuard
   lists `wg-quick` units and NetworkManager connections side by side and

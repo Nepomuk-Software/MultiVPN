@@ -179,9 +179,13 @@ function shellQuote(value) {
 // Everything downstream of "which interface is the tunnel on" is identical for
 // every backend, so it lives in one place and gets appended to each status
 // script. `iface` must already be set when this runs.
+var LINK_KIND = 'ip -d link show "$iface" 2>/dev/null | ' +
+  'awk \'$1=="ovpn"||$1=="wireguard"||$1=="tun"||$1=="tap"||$1=="ppp"{print $1; exit}\''
+
 var INTERFACE_SNIPPET = [
   'printf "iface=%s\\n" "${iface:-}";',
   'if [ -n "${iface:-}" ]; then',
+  '  printf "kind=%s\\n" "$(' + LINK_KIND + ')";',
   '  printf "address=%s\\n" "$(ip -4 -brief addr show dev "$iface" 2>/dev/null | awk \'{print $3}\' | cut -d/ -f1)";',
   '  printf "mtu=%s\\n" "$(cat /sys/class/net/"$iface"/mtu 2>/dev/null || true)";',
   '  printf "routes=%s\\n" "$(ip -4 route show dev "$iface" 2>/dev/null | awk \'{print $1}\' | grep -v "^default$" | paste -sd, -)";',
@@ -279,13 +283,15 @@ function unifiedStatusScript() {
   return [
     'claimed=" ";',
     'emit() {',
-    '  a=""; m=""; r="";',
+    '  a=""; m=""; r=""; k="";',
     '  if [ -n "$4" ] && [ -e /sys/class/net/"$4" ]; then',
     '    a=$(ip -4 -brief addr show dev "$4" 2>/dev/null | awk \'{print $3}\' | cut -d/ -f1);',
     '    m=$(cat /sys/class/net/"$4"/mtu 2>/dev/null);',
     '    r=$(ip -4 route show dev "$4" 2>/dev/null | awk \'{print $1}\' | paste -sd, -);',
+    '    k=$(ip -d link show "$4" 2>/dev/null |',
+    '        awk \'$1=="ovpn"||$1=="wireguard"||$1=="tun"||$1=="tap"||$1=="ppp"{print $1; exit}\');',
     '  fi;',
-    '  printf "conn=%s|%s|%s|%s|%s|%s|%s|%s|%s\\n" "$1" "$2" "$3" "$4" "$5" "$6" "$a" "$m" "$r";',
+    '  printf "conn=%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\\n" "$1" "$2" "$3" "$4" "$5" "$6" "$a" "$m" "$r" "$k";',
     '  [ -n "$4" ] && claimed="$claimed$4 ";',
     '};',
 
@@ -351,6 +357,7 @@ function parseConnections(raw) {
     if (f.length < 9) continue
     var routes = f[8] ? f[8].split(",").filter(function(r) { return r !== "" }) : []
     out.push({
+      kind: f[9] || "",
       backend: f[0],
       origin: f[1],
       name: f[2],

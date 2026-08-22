@@ -91,6 +91,14 @@ Item {
   property string iface: ""
   property string address: ""
   property string mtu: ""
+  property string linkKind: ""
+
+  // OpenVPN's in-kernel DCO driver ("ovpn") never increments the netdev's
+  // receive counters — /proc/net/dev and `ip -s link` show the same zero. So
+  // the download figure is not a measurement of nothing, it is missing, and
+  // the panel has to say which. Gated on the counters too, so a kernel that
+  // starts reporting makes this disappear on its own.
+  readonly property bool rxUnavailable: linkKind === "ovpn" && rxBytes === 0 && txBytes > 0
   property string server: ""
   property string cipher: ""
   property var routes: []
@@ -402,6 +410,7 @@ Item {
     iface = kv.iface || ""
     address = kv.address || ""
     mtu = kv.mtu || ""
+    linkKind = kv.kind || ""
     since = Number(kv.since || 0)
     routes = kv.routes ? String(kv.routes).split(",").filter(function(r) { return r !== "" }) : []
     uptimeSeconds = Model.uptimeSeconds(since, Date.now())
@@ -436,6 +445,7 @@ Item {
     iface = f ? f.iface : ""
     address = f ? f.address : ""
     mtu = f ? f.mtu : ""
+    linkKind = f ? (f.kind || "") : ""
     routes = f ? f.routes : []
     since = f ? f.since : 0
     enabledState = f ? f.enabled : ""

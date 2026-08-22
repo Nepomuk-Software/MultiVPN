@@ -8,11 +8,13 @@ Item {
   property var points: []        // [{rx, tx}], newest last
   property int capacity: 60      // fixed scale so the curve scrolls in
   property real peak: 1
+  property bool showRx: true
   property color rxColor: "white"
   property color txColor: "white"
 
   implicitHeight: 44
 
+  onShowRxChanged: canvas.requestPaint()
   onPointsChanged: canvas.requestPaint()
   onPeakChanged: canvas.requestPaint()
   onWidthChanged: canvas.requestPaint()
@@ -49,6 +51,17 @@ Item {
 
       // Inbound as an area, outbound as a line on top — both stay readable
       // even where they overlap.
+      if (!root.showRx) {
+        // Nothing measured this direction — a flat line at zero would read as
+        // "no traffic", which is a different claim.
+        ctx.beginPath()
+        plot(ctx, tx, w, h, step, count)
+        ctx.strokeStyle = Qt.rgba(root.txColor.r, root.txColor.g, root.txColor.b, 0.9)
+        ctx.lineWidth = 1.5
+        ctx.stroke()
+        return
+      }
+
       ctx.beginPath()
       plot(ctx, rx, w, h, step, count)
       ctx.lineTo(w, h)

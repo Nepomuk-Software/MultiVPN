@@ -226,7 +226,8 @@ Panel {
     id: labelFace
     WidgetButton {
       bar: root.bar
-      text: "󰖂  ↓" + Model.rate(vpn.rxRate) + " ↑" + Model.rate(vpn.txRate)
+      text: "󰖂  " + (vpn.rxUnavailable ? "" : "↓" + Model.rate(vpn.rxRate) + " ")
+            + "↑" + Model.rate(vpn.txRate)
       active: vpn.connected && root.highlightWhenConnected
       tooltipText: root.barTooltip
       fontSize: Style.font.caption
@@ -443,11 +444,40 @@ Panel {
               label: "Cipher"
               value: vpn.cipher || "—"
             }
-            InfoPair {
-              visible: root.effectiveBackend === "wireguard" && root.currentProfile
-                       && root.currentProfile.allowedIps
-              label: "Allowed IPs"
-              value: root.currentProfile ? String(root.currentProfile.allowedIps || "") : ""
+            // Wrapped like the route list, not elided into uselessness — and
+            // skipped entirely when the kernel routes already say the same.
+            Column {
+              readonly property var entries: {
+                if (root.effectiveBackend !== "wireguard" || !root.currentProfile) return []
+                var raw = String(root.currentProfile.allowedIps || "")
+                if (!raw) return []
+                var list = raw.split(/[;,]/).map(function(x) { return x.trim() })
+                                            .filter(function(x) { return x !== "" })
+                if (list.length === vpn.routes.length
+                    && list.slice().sort().join() === vpn.routes.slice().sort().join())
+                  return []
+                return list
+              }
+
+              visible: entries.length > 0
+              width: parent.width
+              spacing: Style.spacing.xxs
+
+              Text {
+                text: "Allowed IPs"
+                color: root.foreground
+                opacity: 0.6
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+              Text {
+                width: parent.width
+                text: parent.entries.join("  ·  ")
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+              }
             }
             InfoPair { label: "Tunnel IP"; value: vpn.address || "—" }
             InfoPair {
@@ -495,8 +525,20 @@ Panel {
               width: parent.width
               points: vpn.history
               peak: vpn.peakRate
+              showRx: !vpn.rxUnavailable
               rxColor: root.foreground
               txColor: root.foreground
+            }
+
+            Text {
+              visible: vpn.rxUnavailable
+              width: parent.width
+              text: "OpenVPN's DCO driver does not report received bytes to the kernel's "
+                    + "interface counters, so only the upload figure is real here."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
 
             Row {
@@ -504,8 +546,9 @@ Panel {
               spacing: Style.space(16)
 
               Text {
-                text: "↓ " + Model.rate(vpn.rxRate) + "B/s"
+                text: vpn.rxUnavailable ? "↓ n/a" : "↓ " + Model.rate(vpn.rxRate) + "B/s"
                 color: root.foreground
+                opacity: vpn.rxUnavailable ? 0.5 : 1
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
               }
@@ -517,7 +560,8 @@ Panel {
               }
               Item { width: Math.max(0, parent.width - Style.space(230)); height: 1 }
               Text {
-                text: Model.bytes(vpn.rxBytes) + " ↓  " + Model.bytes(vpn.txBytes) + " ↑"
+                text: (vpn.rxUnavailable ? "—" : Model.bytes(vpn.rxBytes))
+                      + " ↓  " + Model.bytes(vpn.txBytes) + " ↑"
                 color: root.foreground
                 opacity: 0.6
                 font.family: root.fontFamily
