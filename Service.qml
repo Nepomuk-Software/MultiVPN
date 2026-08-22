@@ -44,6 +44,10 @@ Item {
   // Which VPN tooling exists on this machine, so the panel can say so instead
   // of leaving the user guessing what "VPN" covers here.
   property var availability: ({})
+  // Which connection the cached details belong to. Server and cipher come from
+  // the OpenVPN journal and would otherwise survive a switch to another VPN
+  // and be shown against it.
+  property string detailIdentity: ""
   readonly property string availabilityLabel: Model.availabilityLabel(availability)
   readonly property bool hasFilePicker: availability.zenity === "1"
 
@@ -266,6 +270,19 @@ Item {
     admin(["import", kind || backendName, sourcePath, name], "import")
   }
 
+  // The other way in for WireGuard. Needs neither the root helper nor
+  // wireguard-tools, which is why the panel offers it first.
+  readonly property bool canImportToNm: availability.nmcli === "1"
+  readonly property bool canImportToWgQuick: availability.wgquick === "1"
+
+  function importToNetworkManager(sourcePath, name) {
+    if (!canImportToNm) { lastError = "NetworkManager is not available"; return }
+    nmImport.command = ["bash", "-lc", Model.nmImportScript(sourcePath, name)]
+    actionStatus = "Importing into NetworkManager…"
+    lastError = ""
+    nmImport.running = true
+  }
+
   // Which kind of config was picked, so the user never has to say.
   function detectConfigKind(path) {
     detectProc.sourcePath = path
@@ -353,6 +370,7 @@ Item {
 
   function applyStatus(raw) {
     var kv = Model.parseKeyValues(raw)
+    var previousIface = iface
     unitState = kv.state || "unknown"
     enabledState = kv.enabled || ""
     origin = kv.origin !== undefined ? kv.origin : origin
@@ -366,9 +384,20 @@ Item {
     routes = kv.routes ? String(kv.routes).split(",").filter(function(r) { return r !== "" }) : []
     uptimeSeconds = Model.uptimeSeconds(since, Date.now())
 
-    // No tunnel, nothing to count. Reset counters and the curve, otherwise the
-    // next session starts with a jump out of the previous one.
-    if (!iface) resetStats()
+    // Details are per connection. Drop them the moment the identity changes,
+    // so a WireGuard tunnel never inherits OpenVPN's server and cipher.
+    var identity = (unified ? activeBackend : backendName) + "/" +
+                   (unified ? activeName : profile)
+    if (identity !== detailIdentity) {
+      detailIdentity = identity
+      server = ""
+      cipher = ""
+      refreshDetails()
+    }
+
+    // No tunnel, nothing to count — and a different interface is a different
+    // session, so its counters must not continue the previous curve.
+    if (!iface || iface !== previousIface) resetStats()
   }
 
   function resetStats() {
@@ -464,6 +493,23 @@ Item {
         return root.unified || (p.backend || "openvpn") === root.backendName
       }))]
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.profileStates = text }
+  }
+
+  Process {
+    id: nmImport
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(code) {
+      root.actionStatus = ""
+      if (code === 0) {
+        root.lastError = ""
+        root.refreshProfiles()
+        root.refresh()
+        root.actionFinished("import", true, "imported into NetworkManager")
+      } else {
+        root.lastError = String(stderr.text || "").trim() || "NetworkManager import failed"
+        root.actionFinished("import", false, root.lastError)
+      }
+    }
   }
 
   Process {

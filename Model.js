@@ -388,8 +388,7 @@ function profileStateScript(entries) {
     var n = shellQuote(e.name)
     if (e.origin === "nm") {
       lines.push(
-        'row=$(nmcli -t -f NAME,DEVICE,STATE connection show 2>/dev/null | awk -F: -v n=' + n + ' \'$1 == n { print; exit }\'); ' +
-        'st=$(printf "%s" "$row" | cut -d: -f3); ' +
+        'st=$(nmcli -g GENERAL.STATE connection show ' + n + ' 2>/dev/null || true); ' +
         'a=$(nmcli -g connection.autoconnect connection show ' + n + ' 2>/dev/null || true); ' +
         'printf "%s=%s:%s\\n" ' + n + ' "$([ "$st" = activated ] && echo active || echo inactive)" ' +
         '"$([ "$a" = yes ] && echo enabled || echo disabled)"')
@@ -407,13 +406,29 @@ function profileStateScript(entries) {
 
 // NetworkManager owns its own WireGuard connections, so they are listed live
 // rather than through the privileged cache.
+// nmcli's terse output escapes colons inside values, so connection names are
+// filtered by stripping the trailing ":wireguard" rather than splitting on ":".
+// Peer lines read "endpoint=host:port allowed-ips=..." with the port's colon
+// backslash-escaped and no spaces around the equals sign.
 function nmWireguardListScript() {
-  return 'command -v nmcli >/dev/null 2>&1 || exit 0; ' +
-         'nmcli -t -f NAME,TYPE connection show 2>/dev/null | awk -F: \'$2 == "wireguard" { print $1 }\' | ' +
-         'while IFS= read -r n; do ' +
-         '  printf "%s\\t%s\\n" "$n" "$(nmcli -g wireguard.peers connection show "$n" 2>/dev/null | ' +
-         '    grep -oE "endpoint = [^,]+" | head -1 | sed "s/endpoint = //")"; ' +
-         'done'
+  return [
+    'command -v nmcli >/dev/null 2>&1 || exit 0;',
+    // A literal backslash through JS, bash and sed is a quoting swamp, so the
+    // unescaping uses parameter expansion against a backslash built from its
+    // octal code. The expansion must be quoted: unquoted, a lone backslash is
+    // read as a pattern escape and matches nothing.
+    'bs=$(printf "\\134");',
+    'nmcli -t -f NAME,TYPE connection show 2>/dev/null | sed -n "s/:wireguard$//p" |',
+    'while IFS= read -r escaped; do',
+    '  n=${escaped//"$bs"/};',
+    '  peers=$(nmcli -g wireguard.peers connection show "$n" 2>/dev/null | head -1);',
+    '  ep=$(printf "%s" "$peers" | grep -oE "endpoint=[^ ]+" | head -1);',
+    '  ep=${ep#endpoint=}; ep=${ep//"$bs"/};',
+    '  ai=$(printf "%s" "$peers" | grep -oE "allowed-ips=[^ ]+" | head -1);',
+    '  ai=${ai#allowed-ips=}; ai=${ai//"$bs"/};',
+    '  printf "%s\\t%s\\t%s\\n" "$n" "$ep" "$ai";',
+    'done'
+  ].join(" ")
 }
 
 function parseNmProfiles(raw) {
@@ -434,6 +449,7 @@ function parseNmProfiles(raw) {
       remote: host,
       port: port,
       proto: "wireguard",
+      allowedIps: String(parts[2] || ""),
       hasAuth: true
     })
   }
@@ -473,6 +489,24 @@ function detectKindScript(path) {
          'else echo unknown; fi'
 }
 
+// NetworkManager imports a wg-quick config file directly, with no root helper
+// and no wireguard-tools — the kernel module is all it needs. That makes it the
+// path of least resistance for WireGuard, so the panel offers it first.
+// nmcli names the connection after the file, hence the rename.
+function nmImportScript(path, name) {
+  var f = shellQuote(path)
+  var n = shellQuote(name)
+  return [
+    'out=$(nmcli connection import type wireguard file ' + f + ' 2>&1) || {',
+    '  printf "%s" "$out" >&2; exit 1;',
+    '};',
+    'id=$(printf "%s" "$out" | sed -n "s/^Connection .\\(.*\\). (.*/\\1/p");',
+    'if [ -n "$id" ] && [ "$id" != ' + n + ' ]; then',
+    '  nmcli connection modify "$id" connection.id ' + n + ' >/dev/null 2>&1 || true;',
+    'fi'
+  ].join(" ")
+}
+
 function mergeProfiles(cached, nmProfiles, stateRaw, backendName) {
   var states = parseKeyValues(stateRaw)
   var all = (cached || []).concat(nmProfiles || [])
@@ -489,6 +523,7 @@ function mergeProfiles(cached, nmProfiles, stateRaw, backendName) {
       port: p.port || "",
       proto: p.proto || "",
       hasAuth: p.hasAuth === true,
+      allowedIps: p.allowedIps || "",
       state: parts[0] || "inactive",
       autostart: parts[1] === "enabled"
     })

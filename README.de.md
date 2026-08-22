@@ -97,6 +97,22 @@ root-Dateien nach `/etc/openvpn/client` kopieren lassen. Und der Cache enthält
 nur Name, Server, Port, Protokoll und ob Zugangsdaten hinterlegt sind — nie
 Schlüsselmaterial oder Passwörter.
 
+## WireGuard-Config installieren
+
+Zwei Wege, beide bietet das Panel unter **Add config** an, sobald es eine
+WireGuard-Datei erkennt:
+
+- **NetworkManager** — kein Root-Helfer, kein `wireguard-tools`, keine
+  Passwortabfrage. Das Kernel-Modul reicht, und NetworkManager aktiviert die
+  Verbindung direkt nach dem Import. Von Hand:
+  `nmcli connection import type wireguard file tunnel.conf`
+- **wg-quick** — landet in `/etc/wireguard` und startet über
+  `wg-quick@<name>.service`. Braucht das Paket `wireguard-tools`, damit es diese
+  Unit überhaupt gibt, und den Root-Helfer zum Schreiben.
+
+Danach taucht die Verbindung in der Liste auf und lässt sich wie jede andere
+schalten.
+
 ## Bedienung
 
 | Ort | Aktion |

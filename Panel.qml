@@ -41,6 +41,9 @@ Panel {
   property string removeBackend: ""
   property string importKind: ""
   property bool importOpen: false
+  // Where a WireGuard config should land. NetworkManager needs no root helper
+  // and no wireguard-tools, so it wins when both are possible.
+  property string importTarget: ""
   property bool portalFormOpen: false
   property bool setupOpen: false
   property int profileIndex: 0
@@ -53,9 +56,19 @@ Panel {
     return base + " · right-click to connect"
   }
 
+  // Which backend the panel is actually describing right now.
+  readonly property string effectiveBackend: vpn.unified ? vpn.activeBackend : vpn.backendName
+
+  // In unified mode the interesting profile is the one that is up, not the one
+  // named in the settings — that setting is only the right-click favourite.
   readonly property var currentProfile: {
-    for (var i = 0; i < vpn.profiles.length; i++)
-      if (vpn.profiles[i].name === vpn.profile) return vpn.profiles[i]
+    var wantName = vpn.unified ? vpn.activeName : vpn.profile
+    var wantBackend = root.effectiveBackend
+    if (!wantName) return null
+    for (var i = 0; i < vpn.profiles.length; i++) {
+      var p = vpn.profiles[i]
+      if (p.name === wantName && (!wantBackend || p.backend === wantBackend)) return p
+    }
     return null
   }
 
@@ -86,6 +99,7 @@ Panel {
     removeOrigin = ""
     removeBackend = ""
     importKind = ""
+    importTarget = ""
     importOpen = false
     portalFormOpen = false
     setupOpen = false
@@ -130,6 +144,9 @@ Panel {
         vpn.detectConfigKind(message)
       } else if (command === "detect" && ok) {
         root.importKind = message
+        root.importTarget = message !== "wireguard" ? ""
+                            : vpn.canImportToNm ? "nm"
+                            : vpn.canImportToWgQuick ? "wg-quick" : ""
       } else if (command === "import" && ok) {
         root.closeForms()
       } else if (command === "credentials" && ok) {
@@ -356,23 +373,28 @@ Panel {
 
             InfoPair {
               label: "Server"
-              value: vpn.server || (root.currentProfile ? root.currentProfile.remote : "")
-                     || (vpn.backendName === "globalprotect" ? vpn.profile : "") || "—"
+              value: {
+                if (root.currentProfile && root.currentProfile.remote)
+                  return root.currentProfile.remote
+                         + (root.currentProfile.port ? ":" + root.currentProfile.port : "")
+                if (root.effectiveBackend === "openvpn" && vpn.server) return vpn.server
+                if (root.effectiveBackend === "globalprotect") return vpn.profile || "—"
+                return "—"
+              }
             }
             InfoPair {
               label: "Protocol"
               value: root.currentProfile && root.currentProfile.proto
                      ? root.currentProfile.proto.toUpperCase()
-                       + (root.currentProfile.port ? " / " + root.currentProfile.port : "")
-                     : "—"
+                     : (root.effectiveBackend ? Model.backend(root.effectiveBackend).label : "—")
             }
             InfoPair {
-              visible: vpn.unified ? vpn.activeBackend === "openvpn" : root.caps.hasCipher
+              visible: root.effectiveBackend === "openvpn"
               label: "Cipher"
               value: vpn.cipher || "—"
             }
             InfoPair {
-              visible: vpn.backendName === "wireguard" && root.currentProfile
+              visible: root.effectiveBackend === "wireguard" && root.currentProfile
                        && root.currentProfile.allowedIps
               label: "Allowed IPs"
               value: root.currentProfile ? String(root.currentProfile.allowedIps || "") : ""
@@ -658,6 +680,57 @@ Panel {
               wrapMode: Text.WordWrap
             }
 
+            // WireGuard can go two ways on the same machine, and they differ
+            // in what they cost the user, so the choice is explicit.
+            Column {
+              visible: root.importKind === "wireguard"
+              width: parent.width
+              spacing: Style.space(4)
+
+              Text {
+                text: "Install into"
+                color: root.foreground
+                opacity: 0.6
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              Row {
+                spacing: Style.spacing.controlGap
+                Button {
+                  text: "NetworkManager"
+                  bordered: true
+                  enabled: vpn.canImportToNm
+                  selected: root.importTarget === "nm"
+                  tooltipText: "No root helper needed"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: root.importTarget = "nm"
+                }
+                Button {
+                  text: "wg-quick"
+                  bordered: true
+                  enabled: vpn.canImportToWgQuick
+                  selected: root.importTarget === "wg-quick"
+                  tooltipText: vpn.canImportToWgQuick
+                               ? "Installs into /etc/wireguard"
+                               : "wireguard-tools is not installed"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: root.importTarget = "wg-quick"
+                }
+              }
+              Text {
+                visible: !vpn.canImportToWgQuick
+                width: parent.width
+                text: "wg-quick needs the wireguard-tools package; without it there is no "
+                      + "wg-quick@ unit to start."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+            }
+
             TextField {
               width: parent.width
               text: root.importName
@@ -674,9 +747,16 @@ Panel {
                 bordered: true
                 enabled: /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(root.importName)
                          && root.importKind !== "" && root.importKind !== "unknown"
+                         && (root.importKind !== "wireguard" || root.importTarget !== "")
+                         && (root.importKind === "wireguard" || vpn.helperInstalled)
                 foreground: root.foreground
                 fontFamily: root.fontFamily
-                onClicked: vpn.importConfig(root.importPath, root.importName, root.importKind)
+                onClicked: {
+                  if (root.importKind === "wireguard" && root.importTarget === "nm")
+                    vpn.importToNetworkManager(root.importPath, root.importName)
+                  else
+                    vpn.importConfig(root.importPath, root.importName, root.importKind)
+                }
               }
               Button {
                 text: "Cancel"

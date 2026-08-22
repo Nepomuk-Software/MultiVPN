@@ -39,6 +39,8 @@ same for all three.
   switches each the right way.
 - **Import** — pick a file with the dialog or paste a path; the widget works
   out whether it is OpenVPN or WireGuard, suggests a name, and installs it.
+  WireGuard configs can go into NetworkManager, which needs neither the root
+  helper nor `wireguard-tools`, or into `/etc/wireguard` for `wg-quick`.
   GlobalProtect portals are added by host name instead, since they are not
   files.
 
@@ -136,6 +138,21 @@ polkit.addRule(function (action, subject) {
 ```
 
 Without it, connecting raises the shell's polkit dialog. That works fine too.
+
+## Installing a WireGuard config
+
+Two routes, and the panel offers both under **Add config** once a WireGuard file
+is detected:
+
+- **NetworkManager** — no root helper, no `wireguard-tools`, no password prompt.
+  The kernel module is all it needs, and NetworkManager activates the connection
+  right after importing. Equivalent by hand:
+  `nmcli connection import type wireguard file tunnel.conf`
+- **wg-quick** — installs into `/etc/wireguard` and is started through
+  `wg-quick@<name>.service`. Needs the `wireguard-tools` package for that unit
+  to exist, and the root helper to write the directory.
+
+Either way the connection then appears in the list and switches like any other.
 
 ## Where things are stored
 
