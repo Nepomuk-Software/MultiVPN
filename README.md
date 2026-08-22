@@ -181,6 +181,9 @@ reports GlobalProtect as connected without marking a row.
 | Bar, left | open/close the panel |
 | Bar, right | tunnel on/off |
 | Bar, middle | refresh |
+| Panel, click an inactive row | connect it |
+| Panel, click an active row | point the detail block at it |
+| Panel, header switch | disconnect what the detail block shows |
 | Panel, `v` | tunnel on/off |
 | Panel, `r` | refresh everything |
 | Panel, `n` | add a config |

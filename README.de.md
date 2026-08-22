@@ -130,6 +130,9 @@ schalten.
 | Bar, links | Panel auf/zu |
 | Bar, rechts | Tunnel an/aus |
 | Bar, mitte | neu einlesen |
+| Panel, Klick auf inaktive Zeile | verbinden |
+| Panel, Klick auf aktive Zeile | Detailblock auf sie richten |
+| Panel, Schalter im Kopf | trennt, was der Detailblock zeigt |
 | Panel, `v` | Tunnel an/aus |
 | Panel, `r` | alles neu einlesen |
 | Panel, `n` | Config hinzufügen |

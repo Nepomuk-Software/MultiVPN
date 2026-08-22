@@ -176,100 +176,6 @@ function shellQuote(value) {
   return "'" + String(value === undefined || value === null ? "" : value).replace(/'/g, "'\\''") + "'"
 }
 
-// Everything downstream of "which interface is the tunnel on" is identical for
-// every backend, so it lives in one place and gets appended to each status
-// script. `iface` must already be set when this runs.
-var LINK_KIND = 'ip -d link show "$iface" 2>/dev/null | ' +
-  'awk \'$1=="ovpn"||$1=="wireguard"||$1=="tun"||$1=="tap"||$1=="ppp"{print $1; exit}\''
-
-var INTERFACE_SNIPPET = [
-  'printf "iface=%s\\n" "${iface:-}";',
-  'if [ -n "${iface:-}" ]; then',
-  '  printf "kind=%s\\n" "$(' + LINK_KIND + ')";',
-  '  printf "address=%s\\n" "$(ip -4 -brief addr show dev "$iface" 2>/dev/null | awk \'{print $3}\' | cut -d/ -f1)";',
-  '  printf "mtu=%s\\n" "$(cat /sys/class/net/"$iface"/mtu 2>/dev/null || true)";',
-  '  printf "routes=%s\\n" "$(ip -4 route show dev "$iface" 2>/dev/null | awk \'{print $1}\' | grep -v "^default$" | paste -sd, -)";',
-  'fi'
-].join(" ")
-
-// Picks the first tunnel-ish device. OpenVPN 2.7 with DCO creates type "ovpn",
-// without DCO "tun"; openconnect/GlobalProtect always uses "tun".
-var FIRST_TUN = '$({ ip -brief link show type ovpn; ip -brief link show type tun; } 2>/dev/null | ' +
-                'awk \'NR==1 { sub(/@.*/, "", $1); print $1; exit }\')'
-
-function openvpnStatusScript(profile) {
-  var u = shellQuote("openvpn-client@" + profile + ".service")
-  return [
-    'u=' + u + ';',
-    'printf "state=%s\\n" "$(systemctl is-active "$u" 2>/dev/null || true)";',
-    'printf "enabled=%s\\n" "$(systemctl is-enabled "$u" 2>/dev/null || true)";',
-    'printf "since=%s\\n" "$(date -d "$(systemctl show "$u" -p ActiveEnterTimestamp --value 2>/dev/null)" +%s 2>/dev/null || true)";',
-    'iface=' + FIRST_TUN + ';',
-    INTERFACE_SNIPPET
-  ].join(" ")
-}
-
-// WireGuard comes in two flavours on the same machine: wg-quick units reading
-// /etc/wireguard, and connections NetworkManager owns. Probe the unit first —
-// if the config exists, wg-quick is what the user set up — then fall back to
-// NetworkManager, and report which one answered so actions can match.
-function wireguardStatusScript(name) {
-  var n = shellQuote(name)
-  var u = shellQuote("wg-quick@" + name + ".service")
-  return [
-    'n=' + n + '; u=' + u + '; origin=""; state=""; enabled=""; since=""; iface="";',
-    'if systemctl cat "$u" >/dev/null 2>&1; then',
-    '  state=$(systemctl is-active "$u" 2>/dev/null || true);',
-    '  if [ "$state" != "inactive" ] || [ -e /sys/class/net/"$n" ]; then',
-    '    origin=wg-quick;',
-    '    enabled=$(systemctl is-enabled "$u" 2>/dev/null || true);',
-    '    since=$(date -d "$(systemctl show "$u" -p ActiveEnterTimestamp --value 2>/dev/null)" +%s 2>/dev/null || true);',
-    '    [ "$state" = active ] && iface="$n";',
-    '  fi;',
-    'fi;',
-    'if [ -z "$origin" ] && command -v nmcli >/dev/null 2>&1; then',
-    '  row=$(nmcli -t -f NAME,TYPE,DEVICE,STATE connection show 2>/dev/null |',
-    '        awk -F: -v n="$n" \'$1 == n && $2 == "wireguard" { print; exit }\');',
-    '  if [ -n "$row" ]; then',
-    '    origin=nm;',
-    '    dev=$(printf "%s" "$row" | cut -d: -f3);',
-    '    st=$(printf "%s" "$row" | cut -d: -f4);',
-    '    [ "$st" = activated ] && state=active || state=inactive;',
-    '    [ "$state" = active ] && iface="$dev";',
-    '    a=$(nmcli -g connection.autoconnect connection show "$n" 2>/dev/null || true);',
-    '    [ "$a" = yes ] && enabled=enabled || enabled=disabled;',
-    '    since=$(nmcli -g connection.timestamp connection show "$n" 2>/dev/null || true);',
-    '  fi;',
-    'fi;',
-    'printf "origin=%s\\n" "${origin:-}";',
-    'printf "state=%s\\n" "${state:-inactive}";',
-    'printf "enabled=%s\\n" "${enabled:-}";',
-    'printf "since=%s\\n" "${since:-}";',
-    INTERFACE_SNIPPET
-  ].join(" ")
-}
-
-// gpclient has no status command and no unit, so presence of the process is
-// the signal. /run/gpclient.lock alone is not enough — a lock file can outlive
-// the process that held it.
-function globalprotectStatusScript() {
-  return [
-    'pid=$(pgrep -x gpclient 2>/dev/null | head -1);',
-    '[ -z "$pid" ] && pid=$(pgrep -x gpservice 2>/dev/null | head -1);',
-    'iface=' + FIRST_TUN + ';',
-    'if [ -n "$pid" ]; then',
-    '  if [ -n "$iface" ]; then state=active; else state=activating; fi;',
-    '  et=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d " ");',
-    '  [ -n "$et" ] && printf "since=%s\\n" "$(( $(date +%s) - et ))";',
-    'else',
-    '  state=inactive; iface="";',
-    'fi;',
-    'printf "state=%s\\n" "$state";',
-    'printf "enabled=%s\\n" "";',
-    INTERFACE_SNIPPET
-  ].join(" ")
-}
-
 // Unified mode asks the machine what is up — and accepts that more than one
 // thing can be. Split-tunnel VPNs coexist happily; only full-tunnel configs
 // fight, and then only over the default route, which the panel points out
@@ -396,11 +302,10 @@ function availabilityLabel(av) {
   return found.join(" · ") + " available"
 }
 
-function statusScript(backendName, profile) {
-  if (backendName === "unified") return unifiedStatusScript()
-  if (backendName === "wireguard") return wireguardStatusScript(profile)
-  if (backendName === "globalprotect") return globalprotectStatusScript()
-  return openvpnStatusScript(profile)
+// One probe for every mode. Pinning the widget to a single backend is a filter
+// over its result, not a second way of asking.
+function statusScript() {
+  return unifiedStatusScript()
 }
 
 // Server endpoint and cipher only exist in OpenVPN's journal. Runs rarely —

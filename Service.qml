@@ -33,11 +33,11 @@ Item {
   readonly property var caps: Model.backend(backendName)
   readonly property bool unified: backendName === "unified"
 
-  // In unified mode nothing is configured up front — these describe whatever
-  // connection the machine actually has up.
-  property string activeBackend: ""
-  property string activeName: ""
-  property string activeOrigin: ""
+  // Pinning the widget to one backend is a filter over the same probe, not a
+  // second way of asking. GlobalProtect has no per-connection name to match on.
+  readonly property string filterBackend: unified ? "" : backendName
+  readonly property string filterName:
+    (unified || backendName === "globalprotect") ? "" : profile
 
   // Several VPNs can be up at once — split tunnels coexist without trouble.
   // The detail and throughput view follows one of them; this is which.
@@ -85,13 +85,19 @@ Item {
   readonly property bool showRate: setting("showRate", false) === true
 
   // ── Connection state ─────────────────────────────────────────────────────
-  property string unitState: "unknown"
-  property string enabledState: ""
-  property string origin: ""           // WireGuard only: "wg-quick" | "nm"
-  property string iface: ""
-  property string address: ""
-  property string mtu: ""
-  property string linkKind: ""
+  // All of this describes the focused connection. Derived rather than stored:
+  // four copies of the same truth was how a WireGuard tunnel ended up showing
+  // OpenVPN's server.
+  readonly property string activeBackend: focused ? focused.backend : ""
+  readonly property string activeName: focused ? focused.name : ""
+  readonly property string activeOrigin: focused ? focused.origin : ""
+  readonly property string iface: focused ? focused.iface : ""
+  readonly property string address: focused ? focused.address : ""
+  readonly property string mtu: focused ? focused.mtu : ""
+  readonly property string linkKind: focused ? (focused.kind || "") : ""
+  readonly property var routes: focused ? focused.routes : []
+  readonly property int since: focused ? focused.since : 0
+  readonly property string unitState: activeConnections.length > 0 ? "active" : "inactive"
 
   // OpenVPN's in-kernel DCO driver ("ovpn") never increments the netdev's
   // receive counters — /proc/net/dev and `ip -s link` show the same zero. So
@@ -101,20 +107,21 @@ Item {
   readonly property bool rxUnavailable: linkKind === "ovpn" && rxBytes === 0 && txBytes > 0
   property string server: ""
   property string cipher: ""
-  property var routes: []
-  property int since: 0                // Unix seconds
   property string intent: ""           // "" | "up" | "down"
   property string actionStatus: ""
   property string lastError: ""
   property bool helperInstalled: false
 
+  // The probe only lists what is up, so a failed attempt leaves no trace in it.
+  // This keeps the label honest until something connects.
+  property bool lastAttemptFailed: false
+  property string lastAttemptName: ""
+
   readonly property bool connected: unitState === "active" && address !== ""
-  readonly property bool failed: unitState === "failed"
-  readonly property bool busy: intent !== "" || unitState === "activating"
-                               || unitState === "deactivating"
-                               || (unitState === "active" && address === "")
-  readonly property bool autostart: enabledState === "enabled"
-  readonly property string stateLabel: Model.stateLabel(unitState, address, intent)
+  readonly property bool failed: lastAttemptFailed && activeConnections.length === 0
+  readonly property bool busy: intent !== "" || (unitState === "active" && address === "")
+  readonly property string stateLabel:
+    Model.stateLabel(failed ? "failed" : unitState, address, intent)
 
   property int uptimeSeconds: 0
 
@@ -135,8 +142,7 @@ Item {
   property var nmProfiles: []
   property string profileStates: ""
   readonly property var profiles: {
-    var base = Model.mergeProfiles(cachedProfiles, nmProfiles, profileStates,
-                                   unified ? "" : backendName)
+    var base = Model.mergeProfiles(cachedProfiles, nmProfiles, profileStates, filterBackend)
     if (!unified) return base
 
     var out = base.concat(Model.portalProfiles(portals))
@@ -156,11 +162,10 @@ Item {
 
   function refresh() { if (!statusProc.running) statusProc.running = true }
 
-  readonly property string detailProfile: unified ? activeName : profile
-
+  // Server and cipher only exist in OpenVPN's journal, and only for the
+  // connection currently in focus.
   function refreshDetails() {
-    var isOpenVpn = unified ? activeBackend === "openvpn" : backendName === "openvpn"
-    if (!isOpenVpn || !detailProfile) return
+    if (activeBackend !== "openvpn" || !activeName) return
     if (!detailProc.running) detailProc.running = true
   }
 
@@ -170,24 +175,25 @@ Item {
     if (!availabilityProc.running) availabilityProc.running = true
     if (!caps.canList) return
     if (!cacheProc.running) cacheProc.running = true
-    if ((unified || backendName === "wireguard") && !nmListProc.running) nmListProc.running = true
+    if ((filterBackend === "" || filterBackend === "wireguard") && !nmListProc.running)
+      nmListProc.running = true
     if (unified && !portalLoad.running) portalLoad.running = true
     if (!profileStateProc.running) profileStateProc.running = true
   }
 
   function toggle() {
-    if (unified) {
-      if (activeConnections.length > 0) { disconnectActive(); return }
-      var fav = favourite()
-      if (fav) activate(fav)
-      return
-    }
-    unitState === "active" || unitState === "activating" ? disconnect() : connect()
+    if (activeConnections.length > 0) { disconnectActive(); return }
+    connect()
   }
 
   // The bar's right-click needs one obvious target when nothing is up. The
-  // `profile` setting doubles as that favourite in unified mode.
+  // `profile` setting is that favourite.
   function favourite() {
+    // GlobalProtect has no listable profiles, so the configured portal stands
+    // in for one.
+    if (backendName === "globalprotect")
+      return profile ? { backend: "globalprotect", origin: "process",
+                         name: profile, state: "inactive" } : null
     if (!profile) return null
     for (var i = 0; i < profiles.length; i++)
       if (profiles[i].name === profile) return profiles[i]
@@ -209,6 +215,7 @@ Item {
     intent = "up"
     actionStatus = ""
     lastError = ""
+    lastAttemptName = p.name
     runAction(commandFor(p.backend, p.origin, p.name, "up"))
   }
 
@@ -224,35 +231,12 @@ Item {
     disconnectProfile(focused)
   }
 
-  function connect(name, useOrigin) {
-    switchTo(name || profile, useOrigin || origin, "up")
+  function connect() {
+    var f = favourite()
+    if (f) activate(f)
   }
 
-  function disconnect() {
-    if (intent !== "") return
-    intent = "down"
-    actionStatus = ""
-    runAction(commandFor(backendName, origin, profile, "down"))
-  }
-
-  // Connecting a different profile means taking the running one down first.
-  // Two tunnels at once would be a routing brawl.
-  function switchTo(name, useOrigin, direction) {
-    if (intent !== "") return
-
-    // GlobalProtect logs in over SSO in a browser. A bar widget cannot own
-    // that, so hand it to a terminal (or the vendor GUI) and go back to
-    // watching — the status poll picks the tunnel up when it appears.
-    if (backendName === "globalprotect" && direction !== "down") {
-      launchGlobalProtect(name)
-      return
-    }
-
-    intent = direction || "up"
-    actionStatus = ""
-    lastError = ""
-    runAction(commandFor(backendName, useOrigin, name, intent))
-  }
+  function disconnect() { disconnectActive() }
 
   function launchGlobalProtect(portal) {
     if (!bar) return
@@ -398,60 +382,19 @@ Item {
   }
 
   function applyStatus(raw) {
-    if (unified) { applyUnifiedStatus(raw); return }
-    var kv = Model.parseKeyValues(raw)
     var previousIface = iface
-    unitState = kv.state || "unknown"
-    enabledState = kv.enabled || ""
-    origin = kv.origin !== undefined ? kv.origin : origin
-    if (kv.backend !== undefined) activeBackend = kv.backend
-    if (kv.name !== undefined) activeName = kv.name
-    if (kv.origin !== undefined) activeOrigin = kv.origin
-    iface = kv.iface || ""
-    address = kv.address || ""
-    mtu = kv.mtu || ""
-    linkKind = kv.kind || ""
-    since = Number(kv.since || 0)
-    routes = kv.routes ? String(kv.routes).split(",").filter(function(r) { return r !== "" }) : []
+    var all = Model.parseConnections(raw)
+
+    activeConnections = filterBackend === "" ? all : all.filter(function(c) {
+      if (c.backend !== filterBackend) return false
+      return filterName === "" || c.name === filterName
+    })
+
+    if (activeConnections.length > 0) lastAttemptFailed = false
     uptimeSeconds = Model.uptimeSeconds(since, Date.now())
 
     // Details are per connection. Drop them the moment the identity changes,
     // so a WireGuard tunnel never inherits OpenVPN's server and cipher.
-    var identity = (unified ? activeBackend : backendName) + "/" +
-                   (unified ? activeName : profile)
-    if (identity !== detailIdentity) {
-      detailIdentity = identity
-      server = ""
-      cipher = ""
-      refreshDetails()
-    }
-
-    // No tunnel, nothing to count — and a different interface is a different
-    // session, so its counters must not continue the previous curve.
-    if (!iface || iface !== previousIface) resetStats()
-  }
-
-  // Unified mode reports every live connection; the focused one fills the
-  // single-connection properties the rest of the widget already reads.
-  function applyUnifiedStatus(raw) {
-    var previousIface = iface
-    activeConnections = Model.parseConnections(raw)
-
-    var f = focused
-    activeBackend = f ? f.backend : ""
-    activeName = f ? f.name : ""
-    activeOrigin = f ? f.origin : ""
-    origin = activeOrigin
-    iface = f ? f.iface : ""
-    address = f ? f.address : ""
-    mtu = f ? f.mtu : ""
-    linkKind = f ? (f.kind || "") : ""
-    routes = f ? f.routes : []
-    since = f ? f.since : 0
-    enabledState = f ? f.enabled : ""
-    unitState = activeConnections.length > 0 ? "active" : "inactive"
-    uptimeSeconds = Model.uptimeSeconds(since, Date.now())
-
     var identity = activeBackend + "/" + activeName
     if (identity !== detailIdentity) {
       detailIdentity = identity
@@ -460,6 +403,8 @@ Item {
       refreshDetails()
     }
 
+    // A different interface is a different session, so its counters must not
+    // continue the previous curve.
     if (!iface || iface !== previousIface) resetStats()
   }
 
@@ -509,13 +454,13 @@ Item {
 
   Process {
     id: statusProc
-    command: ["bash", "-lc", Model.statusScript(root.backendName, root.profile)]
+    command: ["bash", "-lc", Model.statusScript()]
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applyStatus(text) }
   }
 
   Process {
     id: detailProc
-    command: ["bash", "-lc", Model.detailScript("openvpn", root.detailProfile)]
+    command: ["bash", "-lc", Model.detailScript("openvpn", root.activeName)]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -558,7 +503,7 @@ Item {
     id: profileStateProc
     command: ["bash", "-lc", Model.profileStateScript(
       root.cachedProfiles.concat(root.nmProfiles).filter(function(p) {
-        return root.unified || (p.backend || "openvpn") === root.backendName
+        return root.filterBackend === "" || (p.backend || "openvpn") === root.filterBackend
       }))]
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.profileStates = text }
   }
@@ -643,8 +588,9 @@ Item {
         root.refreshDetails()
         root.actionFinished("unit", true, wasUp ? "connected" : "disconnected")
       } else {
+        if (wasUp) root.lastAttemptFailed = true
         root.actionFinished("unit", false, wasUp ? "connection failed" : "disconnect failed")
-        if (wasUp && root.caps.hasCipher) reasonProc.running = true
+        if (wasUp && root.activeBackend !== "wireguard") reasonProc.running = true
         else root.lastError = wasUp ? "Connection failed" : "Disconnect failed"
       }
     }
@@ -664,7 +610,7 @@ Item {
   Process {
     id: reasonProc
     command: ["bash", "-lc",
-      "journalctl -u " + Model.shellQuote("openvpn-client@" + root.detailProfile + ".service")
+      "journalctl -u " + Model.shellQuote("openvpn-client@" + root.lastAttemptName + ".service")
       + " -n 40 --no-pager -o cat 2>/dev/null | "
       + "grep -oE 'AUTH_FAILED|TLS Error|Connection refused|Cannot open' | tail -1"]
     stdout: StdioCollector {

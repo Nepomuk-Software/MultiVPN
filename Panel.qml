@@ -56,8 +56,9 @@ Panel {
     return base + " · right-click to connect"
   }
 
-  // Which backend the panel is actually describing right now.
-  readonly property string effectiveBackend: vpn.unified ? vpn.activeBackend : vpn.backendName
+  // Which backend the panel is actually describing right now — always the
+  // focused connection's, in every mode.
+  readonly property string effectiveBackend: vpn.activeBackend
 
   // In unified mode the interesting profile is the one that is up, not the one
   // named in the settings — that setting is only the right-click favourite.
@@ -114,7 +115,7 @@ Panel {
   function activateCursor() {
     if (!cursorActive || vpn.profiles.length === 0) return
     var p = vpn.profiles[profileIndex]
-    if (p) vpn.activate(p)
+    if (p) p.state === "active" ? vpn.focusConnection(p) : vpn.activate(p)
   }
 
   Service {
@@ -362,42 +363,6 @@ Panel {
             wrapMode: Text.WordWrap
           }
 
-          // Two tunnels can be up at once, and the detail block below can only
-          // describe one, so it needs saying which.
-          Column {
-            visible: vpn.unified && vpn.activeConnections.length > 1
-            width: parent.width
-            spacing: Style.space(4)
-
-            Text {
-              text: "Showing"
-              color: root.foreground
-              opacity: 0.6
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
-            Row {
-              width: parent.width
-              spacing: Style.spacing.controlGap
-
-              Repeater {
-                model: vpn.activeConnections
-
-                Button {
-                  required property var modelData
-                  text: modelData.name || Model.backend(modelData.backend).label
-                  bordered: true
-                  selected: vpn.connectionKey(modelData) === vpn.connectionKey(vpn.focused)
-                  tooltipText: Model.backend(modelData.backend).label
-                               + (modelData.iface ? " · " + modelData.iface : "")
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  onClicked: vpn.focusConnection(modelData)
-                }
-              }
-            }
-          }
-
           // Only full-tunnel configs actually collide, and only here.
           Text {
             visible: vpn.defaultRouteCount > 1
@@ -416,8 +381,12 @@ Panel {
             width: parent.width
             spacing: Style.spacing.labelGap
 
+            // Names the connection it describes, since the list below is what
+            // chooses it.
             PanelSectionHeader {
-              text: "CONNECTION"
+              text: vpn.activeConnections.length > 1 && vpn.activeName
+                    ? "CONNECTION · " + vpn.activeName.toUpperCase()
+                    : "CONNECTION"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
@@ -433,16 +402,16 @@ Panel {
                 return "—"
               }
             }
+            // Protocol and cipher are one fact about the transport; two rows
+            // for eleven characters was waste.
             InfoPair {
-              label: "Protocol"
-              value: root.currentProfile && root.currentProfile.proto
-                     ? root.currentProfile.proto.toUpperCase()
-                     : (root.effectiveBackend ? Model.backend(root.effectiveBackend).label : "—")
-            }
-            InfoPair {
-              visible: root.effectiveBackend === "openvpn"
-              label: "Cipher"
-              value: vpn.cipher || "—"
+              label: "Transport"
+              value: {
+                var proto = root.currentProfile && root.currentProfile.proto
+                            ? root.currentProfile.proto.toUpperCase()
+                            : (root.effectiveBackend ? Model.backend(root.effectiveBackend).label : "")
+                return vpn.cipher ? proto + "  ·  " + vpn.cipher : (proto || "—")
+              }
             }
             // Wrapped like the route list, not elided into uselessness — and
             // skipped entirely when the kernel routes already say the same.
@@ -484,7 +453,6 @@ Panel {
               label: "Interface"
               value: vpn.iface ? vpn.iface + (vpn.mtu ? " · MTU " + vpn.mtu : "") : "—"
             }
-            InfoPair { label: "Uptime"; value: vpn.since > 0 ? Model.duration(vpn.uptimeSeconds) : "—" }
 
             Column {
               visible: vpn.routes.length > 0
@@ -533,8 +501,8 @@ Panel {
             Text {
               visible: vpn.rxUnavailable
               width: parent.width
-              text: "OpenVPN's DCO driver does not report received bytes to the kernel's "
-                    + "interface counters, so only the upload figure is real here."
+              text: "DCO does not report received bytes to the kernel counters — "
+                    + "only the upload figure is real."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -642,7 +610,10 @@ Panel {
               ProfileRow {
                 width: column.width
                 hasCursor: root.cursorActive && root.profileIndex === index
-                onActivated: vpn.activate(profile)
+                // An active row is already connected, so clicking it points the
+                // detail block at it. Disconnecting is the header's switch.
+                onActivated: profile.state === "active" ? vpn.focusConnection(profile)
+                                                        : vpn.activate(profile)
                 onAutostartToggled: vpn.setAutostart(profile.name, profile.origin,
                                                      !profile.autostart, profile.backend)
                 onCredentialsRequested: { root.closeForms(); root.credentialsProfile = profile.name }
@@ -698,14 +669,6 @@ Panel {
               foreground: root.foreground
               fontFamily: root.fontFamily
               onClicked: { root.closeForms(); root.portalFormOpen = true }
-            }
-            Button {
-              text: "Refresh"
-              iconText: "󰑐"
-              bordered: true
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              onClicked: { vpn.refresh(); vpn.refreshDetails(); vpn.refreshProfiles() }
             }
           }
 
@@ -1105,6 +1068,8 @@ Panel {
     readonly property alias hovered: rowMouse.containsMouse
     readonly property bool isCurrent: profile && profile.name === vpn.profile
     readonly property bool isActive: profile && profile.state === "active"
+    readonly property bool isFocused: isActive && vpn.activeConnections.length > 1
+                                      && vpn.connectionKey(profile) === vpn.connectionKey(vpn.focused)
 
     signal activated()
     signal autostartToggled()
@@ -1120,6 +1085,17 @@ Panel {
       anchors.fill: parent
       hoverEnabled: true
       onClicked: row.activated()
+    }
+
+    // Marks the row the detail block is describing.
+    Rectangle {
+      visible: row.isFocused
+      anchors.left: parent.left
+      anchors.verticalCenter: parent.verticalCenter
+      width: Math.max(2, Style.space(2))
+      height: parent.height - Style.space(8)
+      radius: width / 2
+      color: root.foreground
     }
 
     // Filled while the tunnel is up, outline only otherwise.
@@ -1147,7 +1123,9 @@ Panel {
 
       PanelActionButton {
         visible: row.rowCaps.canAutostart
-        iconText: row.profile && row.profile.autostart ? "󰐫" : "󰐪"
+        // A filled tick-box against an empty one survives 13 px; the previous
+        // pair rendered as two unrelated blobs at this size.
+        iconText: row.profile && row.profile.autostart ? "󰄲" : "󰄱"
         tooltipText: row.profile && row.profile.autostart ? "Disable autostart" : "Enable autostart"
         foreground: row.profile && row.profile.autostart ? root.foreground : root.dim
         hoverColor: root.foreground
@@ -1201,6 +1179,8 @@ Panel {
             bits.push(row.profile.remote + (row.profile.port ? ":" + row.profile.port : ""))
           if (vpn.unified) bits.unshift(Model.backendBadge(row.profile))
           else if (row.profile.origin === "nm") bits.push("NetworkManager")
+          // Spelled out, so the state is readable without decoding a glyph.
+          if (row.profile.autostart) bits.push("autostart")
           if (!row.profile.hasAuth) bits.push("no credentials")
           return bits.join("  ·  ")
         }
