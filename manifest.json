@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "id": "io.github.robinnepomukmai.vpn",
-  "name": "VPN",
+  "id": "io.github.nepomuk-software.multivpn",
+  "name": "MultiVPN",
   "version": "1.0.0",
-  "author": "Robin Mai",
+  "author": "Nepomuk Software",
   "license": "MIT",
   "description": "One bar widget for every VPN on the machine — OpenVPN, WireGuard and GlobalProtect side by side, with throughput, connection details and config import.",
   "kinds": [
@@ -13,7 +13,7 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "VPN",
+    "displayName": "MultiVPN",
     "description": "Toggle the tunnel, watch throughput and connection details, import and manage profiles. Supports OpenVPN, WireGuard and GlobalProtect.",
     "category": "Network",
     "allowMultiple": true,

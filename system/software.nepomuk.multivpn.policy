@@ -5,7 +5,7 @@
 <policyconfig>
   <vendor>Omarchy OpenVPN-Widget</vendor>
 
-  <action id="org.omarchy.vpnadmin.manage">
+  <action id="software.nepomuk.multivpn.manage">
     <description>Manage OpenVPN client profiles</description>
     <description xml:lang="de">OpenVPN-Profile verwalten</description>
     <message>Authentication is required to manage OpenVPN client profiles.</message>
@@ -15,7 +15,7 @@
       <allow_inactive>auth_admin</allow_inactive>
       <allow_active>auth_admin_keep</allow_active>
     </defaults>
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/omarchy-vpn-admin</annotate>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/multivpn-admin</annotate>
     <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
   </action>
 </policyconfig>

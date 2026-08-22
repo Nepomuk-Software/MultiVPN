@@ -1,4 +1,4 @@
-# VPN für Omarchy
+# MultiVPN für Omarchy
 
 Ein Bar-Widget für alle VPNs der Maschine. Der **Unified-Modus** — die
 Voreinstellung — listet OpenVPN-Profile, WireGuard-Interfaces und
@@ -69,7 +69,7 @@ Leserechte darauf steht dort schlicht `—`.
 ## Installieren
 
 ```bash
-omarchy plugin add https://github.com/robinnepomukmai/omarchy-vpn.git --enable
+omarchy plugin add https://github.com/Nepomuk-Software/MultiVPN.git --enable
 ```
 
 ## Privilegien-Grenze
@@ -96,12 +96,12 @@ Rechteausweitung wie aus dem Lehrbuch. Im Terminal siehst du außerdem, was es
 tut. Von Hand dasselbe:
 
 ```bash
-sudo bash ~/.config/omarchy/plugins/io.github.robinnepomukmai.vpn/system/install.sh
+sudo bash ~/.config/omarchy/plugins/io.github.nepomuk-software.multivpn/system/install.sh
 ```
 
-Installiert werden `/usr/local/bin/omarchy-vpn-admin` (`root:root 0755`), die
-Polkit-Aktion `org.omarchy.vpnadmin.manage`, zwei systemd-Units, die den
-Profil-Cache aktuell halten, und `/var/lib/omarchy-vpn/profiles.json`
+Installiert werden `/usr/local/bin/multivpn-admin` (`root:root 0755`), die
+Polkit-Aktion `software.nepomuk.multivpn.manage`, zwei systemd-Units, die den
+Profil-Cache aktuell halten, und `/var/lib/multivpn/profiles.json`
 (`root:wheel 0640`). Rückgängig mit `--uninstall`.
 
 Zwei Details zum Helfer: Beim Import liest er die Quelldatei **mit den Rechten
@@ -145,12 +145,12 @@ schalten.
 Tastenkombination in `~/.config/hypr/bindings.lua`:
 
 ```lua
-o.bind("SUPER + ALT + V", "VPN toggle", "omarchy-shell io.github.robinnepomukmai.vpn toggleVpn")
+o.bind("SUPER + ALT + V", "VPN toggle", "omarchy-shell io.github.nepomuk-software.multivpn toggleVpn")
 ```
 
 ## Einstellungen
 
-`omarchy bar set io.github.robinnepomukmai.vpn <key> <value>` —
+`omarchy bar set io.github.nepomuk-software.multivpn <key> <value>` —
 `backend` (`unified`, `openvpn`, `wireguard`, `globalprotect`), `profile`,
 `intervalSec`, `showRate`, `highlightWhenConnected`, `hideWhenDisconnected`.
 Unified braucht keine Einstellung; `profile` ist dort nur der Favorit für den

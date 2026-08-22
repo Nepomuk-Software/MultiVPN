@@ -15,8 +15,8 @@ import "Model.js" as Model
 // usable; only the profile section says what is missing.
 Panel {
   id: root
-  moduleName: "io.github.robinnepomukmai.vpn"
-  ipcTarget: "io.github.robinnepomukmai.vpn"
+  moduleName: "io.github.nepomuk-software.multivpn"
+  ipcTarget: "io.github.nepomuk-software.multivpn"
   manageIpc: false
 
   // Lets peer instances on other monitors reach this one's state.
@@ -554,7 +554,7 @@ Panel {
                     ? "Portal " + vpn.profile + ". Connecting opens a terminal for the SSO login; "
                       + "the widget takes it from there."
                     : "No portal configured. Connecting opens the GlobalProtect GUI. Set one with "
-                      + "`omarchy bar set io.github.robinnepomukmai.vpn profile <portal>`."
+                      + "`omarchy bar set io.github.nepomuk-software.multivpn profile <portal>`."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall

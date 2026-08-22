@@ -1,4 +1,4 @@
-# VPN for Omarchy
+# MultiVPN for Omarchy
 
 One bar widget for every VPN on the machine. **Unified mode** — the default —
 lists OpenVPN profiles, WireGuard interfaces and GlobalProtect portals in a
@@ -71,15 +71,15 @@ Reading the journal is optional in practice: without it the panel simply shows
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/robinnepomukmai/omarchy-vpn.git --enable
+omarchy plugin add https://github.com/Nepomuk-Software/MultiVPN.git --enable
 ```
 
 That is enough — unified mode needs no configuration. To pin an instance to one
 backend instead:
 
 ```bash
-omarchy bar set io.github.robinnepomukmai.vpn backend openvpn
-omarchy bar set io.github.robinnepomukmai.vpn profile work
+omarchy bar set io.github.nepomuk-software.multivpn backend openvpn
+omarchy bar set io.github.nepomuk-software.multivpn profile work
 ```
 
 ## Privilege boundary
@@ -104,15 +104,15 @@ directory you can write, and running a user-writable script through `pkexec` is
 a textbook privilege escalation. Same thing by hand:
 
 ```bash
-sudo bash ~/.config/omarchy/plugins/io.github.robinnepomukmai.vpn/system/install.sh
+sudo bash ~/.config/omarchy/plugins/io.github.nepomuk-software.multivpn/system/install.sh
 ```
 
 | Path | What it is |
 |---|---|
-| `/usr/local/bin/omarchy-vpn-admin` | the only thing that writes under `/etc/openvpn/client` and `/etc/wireguard`; `root:root 0755` |
-| `/usr/share/polkit-1/actions/org.omarchy.vpnadmin.policy` | action `org.omarchy.vpnadmin.manage`, `auth_admin_keep` |
-| `/etc/systemd/system/omarchy-vpn-cache.{path,service}` | regenerates the cache when either config directory changes |
-| `/var/lib/omarchy-vpn/profiles.json` | the profile list the panel reads; `root:wheel 0640` |
+| `/usr/local/bin/multivpn-admin` | the only thing that writes under `/etc/openvpn/client` and `/etc/wireguard`; `root:root 0755` |
+| `/usr/share/polkit-1/actions/software.nepomuk.multivpn.policy` | action `software.nepomuk.multivpn.manage`, `auth_admin_keep` |
+| `/etc/systemd/system/multivpn-cache.{path,service}` | regenerates the cache when either config directory changes |
+| `/var/lib/multivpn/profiles.json` | the profile list the panel reads; `root:wheel 0640` |
 
 Two things worth knowing about the helper:
 
@@ -127,7 +127,7 @@ Remove all of it again with:
 
 ```bash
 sudo bash .../system/install.sh --uninstall
-omarchy plugin remove io.github.robinnepomukmai.vpn
+omarchy plugin remove io.github.nepomuk-software.multivpn
 ```
 
 ### Connecting without a password prompt
@@ -169,9 +169,9 @@ Either way the connection then appears in the list and switches like any other.
 
 | Path | What |
 |---|---|
-| `/var/lib/omarchy-vpn/profiles.json` | OpenVPN and `wg-quick` profiles, written by the helper |
+| `/var/lib/multivpn/profiles.json` | OpenVPN and `wg-quick` profiles, written by the helper |
 | NetworkManager | WireGuard connections, read live via `nmcli` |
-| `~/.local/state/omarchy-vpn/portals.json` | GlobalProtect portals, owned by you, plain host names |
+| `~/.local/state/multivpn/portals.json` | GlobalProtect portals, owned by you, plain host names |
 
 One known gap: `gpclient` redacts host names in its own log, so when more than
 one portal is configured the widget cannot tell which one is connected. It
@@ -197,12 +197,12 @@ reports GlobalProtect as connected without marking a row.
 A keybinding for the tunnel, in `~/.config/hypr/bindings.lua`:
 
 ```lua
-o.bind("SUPER + ALT + V", "VPN toggle", "omarchy-shell io.github.robinnepomukmai.vpn toggleVpn")
+o.bind("SUPER + ALT + V", "VPN toggle", "omarchy-shell io.github.nepomuk-software.multivpn toggleVpn")
 ```
 
 ## Settings
 
-`omarchy bar set io.github.robinnepomukmai.vpn <key> <value>`
+`omarchy bar set io.github.nepomuk-software.multivpn <key> <value>`
 
 | Key | Default | Effect |
 |---|---|---|
@@ -216,7 +216,7 @@ o.bind("SUPER + ALT + V", "VPN toggle", "omarchy-shell io.github.robinnepomukmai
 ## IPC
 
 ```
-omarchy-shell io.github.robinnepomukmai.vpn <method> [profile]
+omarchy-shell io.github.nepomuk-software.multivpn <method> [profile]
 ```
 
 | Method | Does |

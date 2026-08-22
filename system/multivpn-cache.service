@@ -3,4 +3,4 @@ Description=Rewrite the profile cache for the Omarchy VPN widget
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/omarchy-vpn-admin refresh
+ExecStart=/usr/local/bin/multivpn-admin refresh

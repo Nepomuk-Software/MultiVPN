@@ -7,7 +7,7 @@ import "Model.js" as Model
 // actions, which keeps presentation free of process plumbing.
 //
 // Privilege model: reading needs no root at all. Writing goes through pkexec
-// and the helper at /usr/local/bin/omarchy-vpn-admin, and the profile list
+// and the helper at /usr/local/bin/multivpn-admin, and the profile list
 // comes from that helper's cache so merely opening the panel never raises an
 // auth dialog. NetworkManager-owned WireGuard connections skip the helper
 // entirely — nmcli lists them unprivileged and polkit governs the rest.
@@ -18,8 +18,8 @@ Item {
   property bool detailed: false        // panel open → poll faster, fetch details
   property QtObject bar: null          // for the one action that needs a terminal
 
-  readonly property string helperPath: "/usr/local/bin/omarchy-vpn-admin"
-  readonly property string cachePath: "/var/lib/omarchy-vpn/profiles.json"
+  readonly property string helperPath: "/usr/local/bin/multivpn-admin"
+  readonly property string cachePath: "/var/lib/multivpn/profiles.json"
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -308,7 +308,7 @@ Item {
   // gpclient has no system-wide portal registry, so the widget keeps a plain
   // list of host names of its own. Nothing here is privileged or secret.
   readonly property string portalsPath:
-    Quickshell.env("HOME") + "/.local/state/omarchy-vpn/portals.json"
+    Quickshell.env("HOME") + "/.local/state/multivpn/portals.json"
 
   function addPortal(name) {
     var clean = String(name || "").trim()

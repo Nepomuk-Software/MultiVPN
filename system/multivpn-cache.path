@@ -1,11 +1,11 @@
 [Unit]
 Description=Watch VPN configs for the Omarchy VPN widget
-Documentation=file:///usr/local/bin/omarchy-vpn-admin
+Documentation=file:///usr/local/bin/multivpn-admin
 
 [Path]
 PathChanged=/etc/openvpn/client
 PathChanged=/etc/wireguard
-Unit=omarchy-vpn-cache.service
+Unit=multivpn-cache.service
 
 [Install]
 WantedBy=paths.target
