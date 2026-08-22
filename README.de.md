@@ -38,6 +38,9 @@ Durchsatz — funktioniert für alle drei gleich.
 
 - **Bar-Icon** — gedimmt wenn getrennt, normal wenn verbunden, pulsierend
   während eines Schaltvorgangs. Optional mit Durchsatz daneben.
+- **Ein Schalter pro VPN**, in dessen eigener Zeile. Es gibt keinen globalen
+  Schalter: wenn mehrere Verbindungen gleichzeitig möglich sind, müsste ein
+  einzelner Schalter oben stillschweigend eine davon auswählen.
 - **Verbindung** — Server-Endpunkt, Protokoll und Port, Cipher, Tunnel-IP,
   Interface samt MTU, Laufzeit, gesetzte Routen.
 - **Durchsatz** — Sparkline über die letzten 60 Messpunkte, aktuelle Rate und
@@ -130,9 +133,9 @@ schalten.
 | Bar, links | Panel auf/zu |
 | Bar, rechts | Tunnel an/aus |
 | Bar, mitte | neu einlesen |
+| Panel, Schalter in der Zeile | dieses VPN an/aus |
 | Panel, Klick auf inaktive Zeile | verbinden |
 | Panel, Klick auf aktive Zeile | Detailblock auf sie richten |
-| Panel, Schalter im Kopf | trennt, was der Detailblock zeigt |
 | Panel, `v` | Tunnel an/aus |
 | Panel, `r` | alles neu einlesen |
 | Panel, `n` | Config hinzufügen |

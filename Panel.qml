@@ -330,14 +330,8 @@ Panel {
                   font.pixelSize: Style.font.display
                 }
               }
-              trailingControl: Component {
-                ToggleSwitch {
-                  checked: vpn.connected || vpn.busy
-                  busy: vpn.busy
-                  foreground: root.foreground
-                  onToggled: vpn.toggle()
-                }
-              }
+              // No switch here. It looked global while acting on one
+              // connection, and the list below already owns on/off per VPN.
             }
           }
 
@@ -610,8 +604,8 @@ Panel {
               ProfileRow {
                 width: column.width
                 hasCursor: root.cursorActive && root.profileIndex === index
-                // An active row is already connected, so clicking it points the
-                // detail block at it. Disconnecting is the header's switch.
+                // Click the row to use it: off turns it on, on shows its
+                // details. Turning one off is its own switch, always visible.
                 onActivated: profile.state === "active" ? vpn.focusConnection(profile)
                                                         : vpn.activate(profile)
                 onAutostartToggled: vpn.setAutostart(profile.name, profile.origin,
@@ -1098,28 +1092,47 @@ Panel {
       color: root.foreground
     }
 
-    // Filled while the tunnel is up, outline only otherwise.
-    Rectangle {
+    // Placeholder that keeps the label column clear of the focus bar.
+    Item {
       id: dot
       anchors.left: parent.left
-      anchors.leftMargin: Style.space(6)
+      anchors.leftMargin: Style.space(4)
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(7)
+      width: Style.space(4)
       height: width
-      radius: width / 2
-      color: row.isActive ? root.foreground : "transparent"
-      border.width: 1
-      border.color: row.isActive ? root.foreground
-                                 : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.4)
     }
 
-    // Declared after the MouseArea so the buttons swallow the row click.
-    Row {
-      id: rowActions
+    // The switch is this row's on/off and its state display in one. Declared
+    // after the MouseArea so it swallows the row click.
+    ToggleSwitch {
+      id: rowSwitch
       anchors.right: parent.right
       anchors.rightMargin: Style.space(4)
       anchors.verticalCenter: parent.verticalCenter
+      checked: row.isActive
+      busy: vpn.intent !== "" && row.profile && vpn.lastAttemptName === row.profile.name
+      foreground: root.foreground
+      cursorRing: false
+      onToggled: vpn.activate(row.isActive
+                              ? Object.assign({}, row.profile, { state: "active" })
+                              : Object.assign({}, row.profile, { state: "inactive" }))
+    }
+
+    // Management is rarely what you came for, so it recedes until the row is
+    // under the pointer. Dimmed rather than hidden: a control you cannot see is
+    // fine, a control you cannot reach is not, and hover is not something this
+    // widget gets to assume.
+    Row {
+      id: rowActions
+      anchors.right: rowSwitch.left
+      anchors.rightMargin: Style.space(6)
+      anchors.verticalCenter: parent.verticalCenter
       spacing: Style.space(2)
+      opacity: (row.hovered || row.hasCursor) ? 1 : 0.3
+
+      Behavior on opacity {
+        NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+      }
 
       PanelActionButton {
         visible: row.rowCaps.canAutostart

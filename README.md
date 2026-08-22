@@ -33,6 +33,9 @@ same for all three.
 
 - **Bar icon** — dimmed while down, solid while up, pulsing during a transition.
   Optionally shows the current rate next to the icon.
+- **One switch per VPN**, in its own row. There is no global switch: with
+  several connections possible at once, a single toggle at the top would have to
+  pick one silently.
 - **Connection** — server endpoint, protocol and port, cipher, tunnel IP,
   interface and MTU, uptime, pushed routes.
 - **Throughput** — a sparkline over the last 60 samples plus current rate and
@@ -181,9 +184,9 @@ reports GlobalProtect as connected without marking a row.
 | Bar, left | open/close the panel |
 | Bar, right | tunnel on/off |
 | Bar, middle | refresh |
+| Panel, row switch | connect or disconnect that VPN |
 | Panel, click an inactive row | connect it |
 | Panel, click an active row | point the detail block at it |
-| Panel, header switch | disconnect what the detail block shows |
 | Panel, `v` | tunnel on/off |
 | Panel, `r` | refresh everything |
 | Panel, `n` | add a config |

@@ -222,6 +222,8 @@ Item {
   function disconnectProfile(p) {
     intent = "down"
     actionStatus = ""
+    // Which row is mid-flight, so its switch can show it.
+    lastAttemptName = p.name
     runAction(commandFor(p.backend, p.origin, p.name, "down"))
   }
 
