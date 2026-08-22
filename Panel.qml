@@ -310,8 +310,10 @@ Panel {
                      : root.caps.label
               meta: {
                 if (!vpn.unified) return (vpn.profile ? vpn.profile + " · " : "") + vpn.stateLabel
-                if (!vpn.activeBackend) return "nothing connected"
-                return (vpn.activeName ? vpn.activeName + " · " : "") + vpn.stateLabel
+                var n = vpn.activeConnections.length
+                if (n === 0) return "nothing connected"
+                var label = (vpn.activeName ? vpn.activeName + " · " : "") + vpn.stateLabel
+                return n > 1 ? label + "  ·  " + n + " connected" : label
               }
               // The hero's detail slot is a fixed-width pill for something
               // short; the availability line gets its own row below.
@@ -354,6 +356,54 @@ Panel {
             width: parent.width
             text: vpn.actionStatus !== "" ? vpn.actionStatus : vpn.lastError
             color: vpn.actionStatus !== "" ? root.dim : root.urgent
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.WordWrap
+          }
+
+          // Two tunnels can be up at once, and the detail block below can only
+          // describe one, so it needs saying which.
+          Column {
+            visible: vpn.unified && vpn.activeConnections.length > 1
+            width: parent.width
+            spacing: Style.space(4)
+
+            Text {
+              text: "Showing"
+              color: root.foreground
+              opacity: 0.6
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+            Row {
+              width: parent.width
+              spacing: Style.spacing.controlGap
+
+              Repeater {
+                model: vpn.activeConnections
+
+                Button {
+                  required property var modelData
+                  text: modelData.name || Model.backend(modelData.backend).label
+                  bordered: true
+                  selected: vpn.connectionKey(modelData) === vpn.connectionKey(vpn.focused)
+                  tooltipText: Model.backend(modelData.backend).label
+                               + (modelData.iface ? " · " + modelData.iface : "")
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: vpn.focusConnection(modelData)
+                }
+              }
+            }
+          }
+
+          // Only full-tunnel configs actually collide, and only here.
+          Text {
+            visible: vpn.defaultRouteCount > 1
+            width: parent.width
+            text: "Two connections claim the default route. Whichever the kernel prefers wins; "
+                  + "the other's traffic will not take its tunnel."
+            color: root.urgent
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
             wrapMode: Text.WordWrap

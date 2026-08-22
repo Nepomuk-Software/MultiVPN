@@ -266,69 +266,104 @@ function globalprotectStatusScript() {
   ].join(" ")
 }
 
-// Unified mode has no configured profile to ask about — it asks the machine
-// what is up. Backends are probed in order and the first live one wins, which
-// is also the honest answer: these tools fight over the default route, so
-// running two at once is not a state worth modelling.
+// Unified mode asks the machine what is up — and accepts that more than one
+// thing can be. Split-tunnel VPNs coexist happily; only full-tunnel configs
+// fight, and then only over the default route, which the panel points out
+// rather than preventing.
+//
+// Every active connection is emitted as one line:
+//   conn=backend|origin|name|iface|since|enabled|address|mtu|routes
+// Routes keep their "default" entry here; the panel hides it from the list but
+// needs it to spot two tunnels claiming the default route.
 function unifiedStatusScript() {
   return [
-    'b=""; name=""; origin=""; iface=""; state=inactive; since=""; enabled="";',
-
-    'u=$(systemctl list-units "openvpn-client@*.service" --state=active --no-legend --plain 2>/dev/null |',
-    '    awk \'NR==1 { print $1 }\');',
-    'if [ -n "$u" ]; then',
-    '  b=openvpn; origin=systemd; state=active;',
-    '  name=$(printf "%s" "$u" | sed -E "s/^openvpn-client@(.*)\\.service$/\\1/");',
-    '  since=$(date -d "$(systemctl show "$u" -p ActiveEnterTimestamp --value 2>/dev/null)" +%s 2>/dev/null || true);',
-    '  enabled=$(systemctl is-enabled "$u" 2>/dev/null || true);',
-    '  iface=' + FIRST_TUN + ';',
-    'fi;',
-
-    'if [ -z "$b" ]; then',
-    '  u=$(systemctl list-units "wg-quick@*.service" --state=active --no-legend --plain 2>/dev/null |',
-    '      awk \'NR==1 { print $1 }\');',
-    '  if [ -n "$u" ]; then',
-    '    b=wireguard; origin=wg-quick; state=active;',
-    '    name=$(printf "%s" "$u" | sed -E "s/^wg-quick@(.*)\\.service$/\\1/");',
-    '    since=$(date -d "$(systemctl show "$u" -p ActiveEnterTimestamp --value 2>/dev/null)" +%s 2>/dev/null || true);',
-    '    enabled=$(systemctl is-enabled "$u" 2>/dev/null || true);',
-    '    iface="$name";',
+    'claimed=" ";',
+    'emit() {',
+    '  a=""; m=""; r="";',
+    '  if [ -n "$4" ] && [ -e /sys/class/net/"$4" ]; then',
+    '    a=$(ip -4 -brief addr show dev "$4" 2>/dev/null | awk \'{print $3}\' | cut -d/ -f1);',
+    '    m=$(cat /sys/class/net/"$4"/mtu 2>/dev/null);',
+    '    r=$(ip -4 route show dev "$4" 2>/dev/null | awk \'{print $1}\' | paste -sd, -);',
     '  fi;',
+    '  printf "conn=%s|%s|%s|%s|%s|%s|%s|%s|%s\\n" "$1" "$2" "$3" "$4" "$5" "$6" "$a" "$m" "$r";',
+    '  [ -n "$4" ] && claimed="$claimed$4 ";',
+    '};',
+
+    // OpenVPN: several instances can run at once, and each one names its own
+    // interface in its journal — "first tun device" would be a coin flip.
+    'while IFS= read -r u; do',
+    '  [ -z "$u" ] && continue;',
+    '  n=${u#openvpn-client@}; n=${n%.service};',
+    '  i=$(journalctl -u "$u" -n 200 --no-pager -o cat 2>/dev/null |',
+    '      grep -oE "net_iface_new: add [^ ]+" | tail -1 | awk \'{print $3}\');',
+    '  s=$(date -d "$(systemctl show "$u" -p ActiveEnterTimestamp --value 2>/dev/null)" +%s 2>/dev/null);',
+    '  e=$(systemctl is-enabled "$u" 2>/dev/null);',
+    '  emit openvpn systemd "$n" "$i" "$s" "$e";',
+    'done < <(systemctl list-units "openvpn-client@*.service" --state=active --no-legend --plain 2>/dev/null | awk \'{print $1}\');',
+
+    'while IFS= read -r u; do',
+    '  [ -z "$u" ] && continue;',
+    '  n=${u#wg-quick@}; n=${n%.service};',
+    '  s=$(date -d "$(systemctl show "$u" -p ActiveEnterTimestamp --value 2>/dev/null)" +%s 2>/dev/null);',
+    '  e=$(systemctl is-enabled "$u" 2>/dev/null);',
+    '  emit wireguard wg-quick "$n" "$n" "$s" "$e";',
+    'done < <(systemctl list-units "wg-quick@*.service" --state=active --no-legend --plain 2>/dev/null | awk \'{print $1}\');',
+
+    'if command -v nmcli >/dev/null 2>&1; then',
+    '  bs=$(printf "\\134");',
+    '  while IFS= read -r escaped; do',
+    '    [ -z "$escaped" ] && continue;',
+    '    n=${escaped//"$bs"/};',
+    '    d=$(nmcli -g GENERAL.DEVICES connection show "$n" 2>/dev/null | head -1);',
+    '    s=$(nmcli -g connection.timestamp connection show "$n" 2>/dev/null);',
+    '    a=$(nmcli -g connection.autoconnect connection show "$n" 2>/dev/null);',
+    '    [ "$a" = yes ] && e=enabled || e=disabled;',
+    '    emit wireguard nm "$n" "$d" "$s" "$e";',
+    '  done < <(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | sed -n "s/:wireguard$//p");',
     'fi;',
 
-    'if [ -z "$b" ] && command -v nmcli >/dev/null 2>&1; then',
-    '  row=$(nmcli -t -f NAME,TYPE,DEVICE,STATE connection show --active 2>/dev/null |',
-    '        awk -F: \'$2 == "wireguard" { print; exit }\');',
-    '  if [ -n "$row" ]; then',
-    '    b=wireguard; origin=nm; state=active;',
-    '    name=$(printf "%s" "$row" | cut -d: -f1);',
-    '    iface=$(printf "%s" "$row" | cut -d: -f3);',
-    '    since=$(nmcli -g connection.timestamp connection show "$name" 2>/dev/null || true);',
-    '    a=$(nmcli -g connection.autoconnect connection show "$name" 2>/dev/null || true);',
-    '    [ "$a" = yes ] && enabled=enabled || enabled=disabled;',
-    '  fi;',
-    'fi;',
-
-    'if [ -z "$b" ]; then',
-    '  pid=$(pgrep -x gpclient 2>/dev/null | head -1);',
-    '  [ -z "$pid" ] && pid=$(pgrep -x gpservice 2>/dev/null | head -1);',
-    '  if [ -n "$pid" ]; then',
-    '    b=globalprotect; origin=process;',
-    '    iface=' + FIRST_TUN + ';',
-    '    if [ -n "$iface" ]; then state=active; else state=activating; fi;',
-    '    et=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d "[:space:]");',
-    '    [ -n "$et" ] && since=$(( $(date +%s) - et ));',
-    '  fi;',
-    'fi;',
-
-    'printf "backend=%s\\n" "$b";',
-    'printf "origin=%s\\n" "$origin";',
-    'printf "name=%s\\n" "$name";',
-    'printf "state=%s\\n" "$state";',
-    'printf "enabled=%s\\n" "$enabled";',
-    'printf "since=%s\\n" "$since";',
-    INTERFACE_SNIPPET
+    // GlobalProtect owns no unit and no name, so it gets whatever tunnel device
+    // nothing else has claimed.
+    'pid=$(pgrep -x gpclient 2>/dev/null | head -1);',
+    '[ -z "$pid" ] && pid=$(pgrep -x gpservice 2>/dev/null | head -1);',
+    'if [ -n "$pid" ]; then',
+    '  gi="";',
+    '  for cand in $({ ip -brief link show type ovpn; ip -brief link show type tun; } 2>/dev/null |',
+    '                awk \'{ sub(/@.*/, "", $1); print $1 }\'); do',
+    '    case "$claimed" in *" $cand "*) ;; *) gi="$cand"; break;; esac;',
+    '  done;',
+    '  et=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d "[:space:]");',
+    '  gs="";',
+    '  [ -n "$et" ] && gs=$(( $(date +%s) - et ));',
+    '  emit globalprotect process "" "$gi" "$gs" "";',
+    'fi'
   ].join(" ")
+}
+
+// One "conn=" line into an object. Unknown or short lines are dropped rather
+// than producing half-filled entries.
+function parseConnections(raw) {
+  var out = []
+  var lines = String(raw || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    if (lines[i].indexOf("conn=") !== 0) continue
+    var f = lines[i].substring(5).split("|")
+    if (f.length < 9) continue
+    var routes = f[8] ? f[8].split(",").filter(function(r) { return r !== "" }) : []
+    out.push({
+      backend: f[0],
+      origin: f[1],
+      name: f[2],
+      iface: f[3],
+      since: Number(f[4] || 0),
+      enabled: f[5],
+      address: f[6],
+      mtu: f[7],
+      routes: routes,
+      hasDefaultRoute: routes.indexOf("default") !== -1
+    })
+  }
+  return out
 }
 
 // What this machine can actually do. Without this the panel says "VPN" and

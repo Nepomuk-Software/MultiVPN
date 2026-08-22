@@ -14,10 +14,14 @@ VPN; `allowMultiple` is on.
 | **WireGuard** (`wg-quick@` and NetworkManager) | yes | `/etc/wireguard` + `nmcli` | yes | yes | n/a — keys live in the config |
 | **GlobalProtect** (`gpclient`) | disconnect yes, connect hands off | no | no | no | n/a — SSO |
 
-Unified mode probes the backends in order and the first live one wins. That is
-also the honest model: these tools all fight over the default route, so
-activating a connection takes down whatever is up first and starts the new one
-when that has finished.
+Unified mode reports **every** connection that is up, not just one. Split-tunnel
+VPNs coexist without trouble — an OpenVPN profile pushing two office subnets and
+a WireGuard tunnel routing a few /16s do not interfere at all — so activating one
+does not take the others down. When more than one is connected, a selector picks
+which one the detail and throughput block describes.
+
+The one real conflict is the default route, and only full-tunnel configs claim
+it. If two connections do, the panel says so rather than trying to prevent it.
 
 GlobalProtect is deliberately the thin one. `gpclient` has no status command,
 no systemd unit and an interactive SSO login, so the widget watches it, can take

@@ -38,7 +38,31 @@ Item {
   property string activeBackend: ""
   property string activeName: ""
   property string activeOrigin: ""
-  property var pendingConnect: null
+
+  // Several VPNs can be up at once — split tunnels coexist without trouble.
+  // The detail and throughput view follows one of them; this is which.
+  property var activeConnections: []
+  property string focusedKey: ""
+
+  readonly property var focused: {
+    if (activeConnections.length === 0) return null
+    for (var i = 0; i < activeConnections.length; i++)
+      if (connectionKey(activeConnections[i]) === focusedKey) return activeConnections[i]
+    return activeConnections[0]
+  }
+
+  // Only full-tunnel configs collide, and only over the default route. Worth
+  // pointing out when it happens; not worth preventing beforehand.
+  readonly property int defaultRouteCount: {
+    var n = 0
+    for (var i = 0; i < activeConnections.length; i++)
+      if (activeConnections[i].hasDefaultRoute) n++
+    return n
+  }
+
+  function connectionKey(c) {
+    return c ? c.backend + "/" + c.name : ""
+  }
   property var portals: []
 
   // Which VPN tooling exists on this machine, so the panel can say so instead
@@ -145,7 +169,7 @@ Item {
 
   function toggle() {
     if (unified) {
-      if (activeBackend) { disconnectActive(); return }
+      if (activeConnections.length > 0) { disconnectActive(); return }
       var fav = favourite()
       if (fav) activate(fav)
       return
@@ -162,17 +186,13 @@ Item {
     return null
   }
 
-  // Activating a row from the list. OpenVPN, WireGuard and GlobalProtect all
-  // fight over the default route, so whatever is up comes down first and the
-  // new one is started from the exit handler.
+  // Activating a row from the list. Connections are not mutually exclusive:
+  // split-tunnel VPNs coexist, and only full-tunnel configs collide — over the
+  // default route, which the panel reports rather than prevents.
   function activate(p) {
     if (!p || intent !== "") return
     if (p.state === "active") { disconnectProfile(p); return }
-    if (activeBackend) {
-      pendingConnect = p
-      disconnectActive()
-      return
-    }
+    focusedKey = p.backend + "/" + p.name
     connectProfile(p)
   }
 
@@ -190,9 +210,10 @@ Item {
     runAction(commandFor(p.backend, p.origin, p.name, "down"))
   }
 
+  // Takes down the focused connection, not all of them.
   function disconnectActive() {
-    if (!activeBackend) return
-    disconnectProfile({ backend: activeBackend, origin: activeOrigin, name: activeName })
+    if (!focused) return
+    disconnectProfile(focused)
   }
 
   function connect(name, useOrigin) {
@@ -369,6 +390,7 @@ Item {
   }
 
   function applyStatus(raw) {
+    if (unified) { applyUnifiedStatus(raw); return }
     var kv = Model.parseKeyValues(raw)
     var previousIface = iface
     unitState = kv.state || "unknown"
@@ -398,6 +420,42 @@ Item {
     // No tunnel, nothing to count — and a different interface is a different
     // session, so its counters must not continue the previous curve.
     if (!iface || iface !== previousIface) resetStats()
+  }
+
+  // Unified mode reports every live connection; the focused one fills the
+  // single-connection properties the rest of the widget already reads.
+  function applyUnifiedStatus(raw) {
+    var previousIface = iface
+    activeConnections = Model.parseConnections(raw)
+
+    var f = focused
+    activeBackend = f ? f.backend : ""
+    activeName = f ? f.name : ""
+    activeOrigin = f ? f.origin : ""
+    origin = activeOrigin
+    iface = f ? f.iface : ""
+    address = f ? f.address : ""
+    mtu = f ? f.mtu : ""
+    routes = f ? f.routes : []
+    since = f ? f.since : 0
+    enabledState = f ? f.enabled : ""
+    unitState = activeConnections.length > 0 ? "active" : "inactive"
+    uptimeSeconds = Model.uptimeSeconds(since, Date.now())
+
+    var identity = activeBackend + "/" + activeName
+    if (identity !== detailIdentity) {
+      detailIdentity = identity
+      server = ""
+      cipher = ""
+      refreshDetails()
+    }
+
+    if (!iface || iface !== previousIface) resetStats()
+  }
+
+  function focusConnection(c) {
+    focusedKey = connectionKey(c)
+    refresh()
   }
 
   function resetStats() {
@@ -572,18 +630,9 @@ Item {
       if (code === 0) {
         root.actionStatus = ""
         root.lastError = ""
-        // A switch is two steps; the second one starts here.
-        if (!wasUp && root.pendingConnect) {
-          var next = root.pendingConnect
-          root.pendingConnect = null
-          root.activeBackend = ""
-          root.connectProfile(next)
-          return
-        }
         root.refreshDetails()
         root.actionFinished("unit", true, wasUp ? "connected" : "disconnected")
       } else {
-        root.pendingConnect = null
         root.actionFinished("unit", false, wasUp ? "connection failed" : "disconnect failed")
         if (wasUp && root.caps.hasCipher) reasonProc.running = true
         else root.lastError = wasUp ? "Connection failed" : "Disconnect failed"

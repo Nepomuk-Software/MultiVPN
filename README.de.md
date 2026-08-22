@@ -15,10 +15,16 @@ Wer lieber ein Icon pro VPN will, kann eine Instanz auf ein Backend festnageln;
 | **WireGuard** (`wg-quick@` und NetworkManager) | ja | `/etc/wireguard` + `nmcli` | ja | ja | entfällt — Schlüssel stehen in der Config |
 | **GlobalProtect** (`gpclient`) | Trennen ja, Verbinden wird übergeben | nein | nein | nein | entfällt — SSO |
 
-Der Unified-Modus probiert die Backends der Reihe nach durch, die erste
-laufende gewinnt. Das ist auch das ehrliche Modell: die Lösungen streiten sich
-alle um die Default-Route. Eine Verbindung zu aktivieren baut deshalb erst ab,
-was läuft, und startet die neue, wenn das durch ist.
+Der Unified-Modus meldet **alle** laufenden Verbindungen, nicht nur eine.
+Split-Tunnel vertragen sich problemlos — ein OpenVPN-Profil, das zwei
+Büro-Subnetze pusht, und ein WireGuard-Tunnel für ein paar /16er kommen sich
+nicht ins Gehege. Eine Verbindung zu aktivieren baut die anderen also nicht ab.
+Sind mehrere verbunden, wählt eine Leiste aus, welche der Detail- und
+Durchsatzblock beschreibt.
+
+Der einzige echte Konflikt ist die Default-Route, und die beanspruchen nur
+Full-Tunnel-Configs. Tun das zwei gleichzeitig, sagt das Panel es — statt es zu
+verhindern.
 
 GlobalProtect ist bewusst der dünne Fall: `gpclient` hat keinen Status-Befehl,
 keine systemd-Unit und einen interaktiven SSO-Login. Das Widget schaut also zu,
