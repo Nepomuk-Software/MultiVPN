@@ -1135,7 +1135,8 @@ Panel {
       }
 
       PanelActionButton {
-        visible: row.rowCaps.canAutostart
+        opacity: row.rowCaps.canAutostart ? 1 : 0
+        enabled: row.rowCaps.canAutostart
         // A filled tick-box against an empty one survives 13 px; the previous
         // pair rendered as two unrelated blobs at this size.
         iconText: row.profile && row.profile.autostart ? "󰄲" : "󰄱"
@@ -1146,7 +1147,8 @@ Panel {
         onClicked: row.autostartToggled()
       }
       PanelActionButton {
-        visible: row.rowCaps.canCredentials
+        opacity: row.rowCaps.canCredentials ? 1 : 0
+        enabled: row.rowCaps.canCredentials
         iconText: "󰌆"
         tooltipText: "Set credentials"
         foreground: row.profile && row.profile.hasAuth ? root.foreground : root.dim
