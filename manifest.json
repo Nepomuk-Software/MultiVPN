@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.robinnepomukmai.openvpn",
+  "name": "OpenVPN",
+  "version": "1.0.0",
+  "author": "Robin Mai",
+  "license": "MIT",
+  "description": "Toggle an OpenVPN tunnel from the bar and see throughput, connection details and profiles in a popup.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "OpenVPN",
+    "description": "Toggle the tunnel, watch throughput and connection details, import and manage profiles.",
+    "category": "Network",
+    "allowMultiple": true,
+    "defaultSection": "right",
+    "defaults": {
+      "profile": "work",
+      "intervalSec": 5,
+      "showRate": false,
+      "highlightWhenConnected": false,
+      "hideWhenDisconnected": false
+    },
+    "schema": [
+      {
+        "key": "profile",
+        "type": "string",
+        "label": "Profile",
+        "description": "Name of the openvpn-client@<profile>.service instance this widget controls.",
+        "defaultValue": "work"
+      },
+      {
+        "key": "intervalSec",
+        "type": "integer",
+        "label": "Status interval (seconds)",
+        "description": "While idle. During a transition and while the popup is open it polls faster on its own.",
+        "min": 1,
+        "max": 300,
+        "step": 1,
+        "defaultValue": 5
+      },
+      {
+        "key": "showRate",
+        "type": "boolean",
+        "label": "Throughput in the bar",
+        "description": "Shows the current rate next to the icon while connected. No effect on vertical bars.",
+        "defaultValue": false
+      },
+      {
+        "key": "highlightWhenConnected",
+        "type": "boolean",
+        "label": "Highlight when connected",
+        "description": "Tints the icon with the accent colour while the tunnel is up instead of just showing it at full opacity.",
+        "defaultValue": false
+      },
+      {
+        "key": "hideWhenDisconnected",
+        "type": "boolean",
+        "label": "Only show when connected",
+        "description": "Hides the icon entirely while the tunnel is down.",
+        "defaultValue": false
+      }
+    ]
+  }
+}

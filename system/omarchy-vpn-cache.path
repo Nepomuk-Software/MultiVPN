@@ -1,0 +1,10 @@
+[Unit]
+Description=Watch OpenVPN client configs for the Omarchy VPN widget
+Documentation=file:///usr/local/bin/omarchy-vpn-admin
+
+[Path]
+PathChanged=/etc/openvpn/client
+Unit=omarchy-vpn-cache.service
+
+[Install]
+WantedBy=paths.target

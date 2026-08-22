@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Omarchy OpenVPN-Widget</vendor>
+
+  <action id="org.omarchy.vpnadmin.manage">
+    <description>Manage OpenVPN client profiles</description>
+    <description xml:lang="de">OpenVPN-Profile verwalten</description>
+    <message>Authentication is required to manage OpenVPN client profiles.</message>
+    <message xml:lang="de">Zum Verwalten der OpenVPN-Profile ist eine Authentifizierung nötig.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/local/bin/omarchy-vpn-admin</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+</policyconfig>
