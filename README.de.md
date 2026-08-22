@@ -1,13 +1,24 @@
 # VPN für Omarchy
 
-Bar-Widget für OpenVPN, WireGuard und GlobalProtect. Tunnel aus der Bar
-schalten, im Popup Durchsatz, Verbindungsdetails und Profilverwaltung.
+Ein Bar-Widget für alle VPNs der Maschine. Der **Unified-Modus** — die
+Voreinstellung — listet OpenVPN-Profile, WireGuard-Interfaces und
+GlobalProtect-Portale in einem Panel, folgt der jeweils verbundenen Lösung und
+wechselt per Klick. Knöpfe fügen eine Config oder ein Portal hinzu, ohne das
+Panel zu verlassen.
+
+Wer lieber ein Icon pro VPN will, kann eine Instanz auf ein Backend festnageln;
+`allowMultiple` ist an.
 
 | Backend | Schalten | Profilliste | Autostart | Import | Zugangsdaten |
 |---|---|---|---|---|---|
 | **OpenVPN** (`openvpn-client@`) | ja | `/etc/openvpn/client` | ja | ja | ja |
 | **WireGuard** (`wg-quick@` und NetworkManager) | ja | `/etc/wireguard` + `nmcli` | ja | ja | entfällt — Schlüssel stehen in der Config |
 | **GlobalProtect** (`gpclient`) | Trennen ja, Verbinden wird übergeben | nein | nein | nein | entfällt — SSO |
+
+Der Unified-Modus probiert die Backends der Reihe nach durch, die erste
+laufende gewinnt. Das ist auch das ehrliche Modell: die Lösungen streiten sich
+alle um die Default-Route. Eine Verbindung zu aktivieren baut deshalb erst ab,
+was läuft, und startet die neue, wenn das durch ist.
 
 GlobalProtect ist bewusst der dünne Fall: `gpclient` hat keinen Status-Befehl,
 keine systemd-Unit und einen interaktiven SSO-Login. Das Widget schaut also zu,
@@ -29,7 +40,9 @@ Durchsatz — funktioniert für alle drei gleich.
   wechselt, dazu Autostart, Zugangsdaten und Entfernen pro Profil. WireGuard
   listet `wg-quick`-Units und NetworkManager-Verbindungen nebeneinander und
   schaltet jede auf ihrem eigenen Weg.
-- **Import** — `.ovpn` auswählen und als benanntes Profil installieren.
+- **Import** — Datei auswählen; das Widget erkennt selbst, ob OpenVPN oder
+  WireGuard, schlägt einen Namen vor und installiert. GlobalProtect-Portale
+  kommen stattdessen als Hostname dazu, sie sind ja keine Dateien.
 
 ## Voraussetzungen
 
@@ -43,8 +56,6 @@ Leserechte darauf steht dort schlicht `—`.
 
 ```bash
 omarchy plugin add https://github.com/robinnepomukmai/omarchy-vpn.git --enable
-omarchy bar set io.github.robinnepomukmai.vpn backend openvpn
-omarchy bar set io.github.robinnepomukmai.vpn profile work
 ```
 
 ## Privilegien-Grenze
@@ -102,8 +113,14 @@ o.bind("SUPER + ALT + V", "VPN toggle", "omarchy-shell io.github.robinnepomukmai
 ## Einstellungen
 
 `omarchy bar set io.github.robinnepomukmai.vpn <key> <value>` —
-`backend` (`openvpn`, `wireguard`, `globalprotect`), `profile`, `intervalSec`,
-`showRate`, `highlightWhenConnected`, `hideWhenDisconnected`. Details in der [englischen README](README.md).
+`backend` (`unified`, `openvpn`, `wireguard`, `globalprotect`), `profile`,
+`intervalSec`, `showRate`, `highlightWhenConnected`, `hideWhenDisconnected`.
+Unified braucht keine Einstellung; `profile` ist dort nur der Favorit für den
+Rechtsklick.
+
+Bekannte Lücke: `gpclient` schwärzt Hostnamen in seinem eigenen Log. Sind
+mehrere Portale eingetragen, kann das Widget nicht sagen, welches verbunden
+ist — es meldet dann GlobalProtect als verbunden, ohne eine Zeile zu markieren. Details in der [englischen README](README.md).
 
 ## Entwickeln
 

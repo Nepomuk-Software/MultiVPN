@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "Robin Mai",
   "license": "MIT",
-  "description": "Toggle OpenVPN, WireGuard or GlobalProtect from the bar and see throughput, connection details and profiles in a popup.",
+  "description": "One bar widget for every VPN on the machine — OpenVPN, WireGuard and GlobalProtect side by side, with throughput, connection details and config import.",
   "kinds": [
     "bar-widget"
   ],
@@ -19,32 +19,33 @@
     "allowMultiple": true,
     "defaultSection": "right",
     "defaults": {
-      "profile": "work",
+      "profile": "",
       "intervalSec": 5,
       "showRate": false,
       "highlightWhenConnected": false,
       "hideWhenDisconnected": false,
-      "backend": "openvpn"
+      "backend": "unified"
     },
     "schema": [
       {
         "key": "backend",
         "type": "enum",
         "label": "VPN type",
-        "description": "Which VPN this instance controls. WireGuard covers both wg-quick units and NetworkManager connections. GlobalProtect can be watched and disconnected; connecting hands off to a terminal because the login is interactive.",
+        "description": "unified lists every VPN on the machine in one panel and follows whichever is connected. The single-backend modes pin the widget to one profile instead.",
         "options": [
+          "unified",
           "openvpn",
           "wireguard",
           "globalprotect"
         ],
-        "defaultValue": "openvpn"
+        "defaultValue": "unified"
       },
       {
         "key": "profile",
         "type": "string",
         "label": "Profile",
-        "description": "OpenVPN: the openvpn-client@<profile> instance. WireGuard: the interface or NetworkManager connection name. GlobalProtect: the portal server, or empty to open the GUI.",
-        "defaultValue": "work"
+        "description": "Single-backend modes: which profile the icon controls. In unified mode it is only the favourite that right-click connects when nothing is up.",
+        "defaultValue": ""
       },
       {
         "key": "intervalSec",

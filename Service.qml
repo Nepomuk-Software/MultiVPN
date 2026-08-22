@@ -31,6 +31,15 @@ Item {
     return Model.BACKENDS[raw] ? raw : "openvpn"
   }
   readonly property var caps: Model.backend(backendName)
+  readonly property bool unified: backendName === "unified"
+
+  // In unified mode nothing is configured up front — these describe whatever
+  // connection the machine actually has up.
+  property string activeBackend: ""
+  property string activeName: ""
+  property string activeOrigin: ""
+  property var pendingConnect: null
+  property var portals: []
 
   // For OpenVPN and WireGuard this is a profile/interface name; for
   // GlobalProtect it is the portal server.
@@ -83,8 +92,21 @@ Item {
   property var cachedProfiles: []
   property var nmProfiles: []
   property string profileStates: ""
-  readonly property var profiles:
-    Model.mergeProfiles(cachedProfiles, nmProfiles, profileStates, backendName)
+  readonly property var profiles: {
+    var base = Model.mergeProfiles(cachedProfiles, nmProfiles, profileStates,
+                                   unified ? "" : backendName)
+    if (!unified) return base
+
+    var out = base.concat(Model.portalProfiles(portals))
+    // gpclient redacts host names in its log, so with several portals
+    // configured there is no way to tell which one is up. Mark none rather
+    // than guess — the header still reports that GlobalProtect is connected.
+    if (activeBackend === "globalprotect" && portals.length === 1) {
+      for (var i = 0; i < out.length; i++)
+        if (out[i].backend === "globalprotect") out[i].state = "active"
+    }
+    return out
+  }
 
   signal actionFinished(string command, bool ok, string message)
 
@@ -92,20 +114,72 @@ Item {
 
   function refresh() { if (!statusProc.running) statusProc.running = true }
 
+  readonly property string detailProfile: unified ? activeName : profile
+
   function refreshDetails() {
-    if (!caps.hasCipher) return
+    var isOpenVpn = unified ? activeBackend === "openvpn" : backendName === "openvpn"
+    if (!isOpenVpn || !detailProfile) return
     if (!detailProc.running) detailProc.running = true
   }
 
   function refreshProfiles() {
     if (!caps.canList) return
     if (!cacheProc.running) cacheProc.running = true
-    if (backendName === "wireguard" && !nmListProc.running) nmListProc.running = true
+    if ((unified || backendName === "wireguard") && !nmListProc.running) nmListProc.running = true
+    if (unified && !portalLoad.running) portalLoad.running = true
     if (!profileStateProc.running) profileStateProc.running = true
   }
 
   function toggle() {
+    if (unified) {
+      if (activeBackend) { disconnectActive(); return }
+      var fav = favourite()
+      if (fav) activate(fav)
+      return
+    }
     unitState === "active" || unitState === "activating" ? disconnect() : connect()
+  }
+
+  // The bar's right-click needs one obvious target when nothing is up. The
+  // `profile` setting doubles as that favourite in unified mode.
+  function favourite() {
+    if (!profile) return null
+    for (var i = 0; i < profiles.length; i++)
+      if (profiles[i].name === profile) return profiles[i]
+    return null
+  }
+
+  // Activating a row from the list. OpenVPN, WireGuard and GlobalProtect all
+  // fight over the default route, so whatever is up comes down first and the
+  // new one is started from the exit handler.
+  function activate(p) {
+    if (!p || intent !== "") return
+    if (p.state === "active") { disconnectProfile(p); return }
+    if (activeBackend) {
+      pendingConnect = p
+      disconnectActive()
+      return
+    }
+    connectProfile(p)
+  }
+
+  function connectProfile(p) {
+    if (p.backend === "globalprotect") { launchGlobalProtect(p.name); return }
+    intent = "up"
+    actionStatus = ""
+    lastError = ""
+    runAction(commandFor(p.backend, p.origin, p.name, "up"))
+  }
+
+  function disconnectProfile(p) {
+    intent = "down"
+    actionStatus = ""
+    runAction(commandFor(p.backend, p.origin, p.name, "down"))
+  }
+
+  function disconnectActive() {
+    if (!activeBackend) return
+    disconnectProfile({ backend: activeBackend, origin: activeOrigin, name: activeName })
   }
 
   function connect(name, useOrigin) {
@@ -116,7 +190,7 @@ Item {
     if (intent !== "") return
     intent = "down"
     actionStatus = ""
-    runAction(commandFor(profile, origin, "down"))
+    runAction(commandFor(backendName, origin, profile, "down"))
   }
 
   // Connecting a different profile means taking the running one down first.
@@ -135,7 +209,7 @@ Item {
     intent = direction || "up"
     actionStatus = ""
     lastError = ""
-    runAction(commandFor(name, useOrigin, intent))
+    runAction(commandFor(backendName, useOrigin, name, intent))
   }
 
   function launchGlobalProtect(portal) {
@@ -149,14 +223,14 @@ Item {
   }
 
   // One place that knows how each backend is actually switched.
-  function commandFor(name, useOrigin, direction) {
-    if (backendName === "globalprotect")
+  function commandFor(forBackend, useOrigin, name, direction) {
+    if (forBackend === "globalprotect")
       return ["pkexec", "gpclient", "disconnect"]
 
-    if (backendName === "wireguard" && useOrigin === "nm")
+    if (forBackend === "wireguard" && useOrigin === "nm")
       return ["nmcli", "connection", direction === "down" ? "down" : "up", "id", name]
 
-    var unit = (backendName === "wireguard" ? "wg-quick@" : "openvpn-client@") + name + ".service"
+    var unit = (forBackend === "wireguard" ? "wg-quick@" : "openvpn-client@") + name + ".service"
     return ["systemctl", direction === "down" ? "stop" : "start", unit]
   }
 
@@ -165,8 +239,9 @@ Item {
     unitAction.running = true
   }
 
-  function setAutostart(name, useOrigin, on) {
-    if (!caps.canAutostart) return
+  function setAutostart(name, useOrigin, on, forBackend) {
+    var target = forBackend || backendName
+    if (target === "globalprotect") return
     // NetworkManager keeps its own autoconnect flag; no helper involved.
     if (useOrigin === "nm") {
       nmAutostart.command = ["nmcli", "connection", "modify", name,
@@ -175,27 +250,61 @@ Item {
       nmAutostart.running = true
       return
     }
-    admin(["autostart", backendName, name, on ? "on" : "off"], "autostart")
+    admin(["autostart", target, name, on ? "on" : "off"], "autostart")
   }
 
-  function importConfig(sourcePath, name) {
-    admin(["import", backendName, sourcePath, name], "import")
+  function importConfig(sourcePath, name, kind) {
+    admin(["import", kind || backendName, sourcePath, name], "import")
   }
 
-  function removeProfile(name, useOrigin) {
+  // Which kind of config was picked, so the user never has to say.
+  function detectConfigKind(path) {
+    detectProc.sourcePath = path
+    detectProc.running = true
+  }
+
+  // ── GlobalProtect portals ────────────────────────────────────────────────
+  // gpclient has no system-wide portal registry, so the widget keeps a plain
+  // list of host names of its own. Nothing here is privileged or secret.
+  readonly property string portalsPath:
+    Quickshell.env("HOME") + "/.local/state/omarchy-vpn/portals.json"
+
+  function addPortal(name) {
+    var clean = String(name || "").trim()
+    if (!clean) return
+    for (var i = 0; i < portals.length; i++)
+      if (portals[i] === clean) return
+    savePortals(portals.concat([clean]))
+  }
+
+  function removePortal(name) {
+    savePortals(portals.filter(function(p) { return p !== name }))
+  }
+
+  function savePortals(list) {
+    portals = list
+    portalSave.command = ["bash", "-lc",
+      "mkdir -p " + Model.shellQuote(portalsPath.replace(/\/[^\/]*$/, "")) +
+      " && printf '%s' " + Model.shellQuote(JSON.stringify(list)) +
+      " > " + Model.shellQuote(portalsPath)]
+    portalSave.running = true
+  }
+
+  function removeProfile(name, useOrigin, forBackend) {
     if (useOrigin === "nm") {
       nmAutostart.command = ["nmcli", "connection", "delete", name]
       actionStatus = "Removing connection…"
       nmAutostart.running = true
       return
     }
-    admin(["remove", backendName, name], "remove")
+    if (forBackend === "globalprotect") { removePortal(name); return }
+    admin(["remove", forBackend || backendName, name], "remove")
   }
 
   function setCredentials(name, user, password) {
     if (!helperInstalled) { lastError = helperMissing; return }
     credentialsProc.secret = user + "\n" + password + "\n"
-    credentialsProc.command = ["pkexec", helperPath, "credentials", backendName, name]
+    credentialsProc.command = ["pkexec", helperPath, "credentials", "openvpn", name]
     actionStatus = "Setting credentials…"
     credentialsProc.running = true
   }
@@ -224,6 +333,9 @@ Item {
     unitState = kv.state || "unknown"
     enabledState = kv.enabled || ""
     origin = kv.origin !== undefined ? kv.origin : origin
+    if (kv.backend !== undefined) activeBackend = kv.backend
+    if (kv.name !== undefined) activeName = kv.name
+    if (kv.origin !== undefined) activeOrigin = kv.origin
     iface = kv.iface || ""
     address = kv.address || ""
     mtu = kv.mtu || ""
@@ -283,7 +395,7 @@ Item {
 
   Process {
     id: detailProc
-    command: ["bash", "-lc", Model.detailScript(root.backendName, root.profile)]
+    command: ["bash", "-lc", Model.detailScript("openvpn", root.detailProfile)]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -326,9 +438,40 @@ Item {
     id: profileStateProc
     command: ["bash", "-lc", Model.profileStateScript(
       root.cachedProfiles.concat(root.nmProfiles).filter(function(p) {
-        return (p.backend || "openvpn") === root.backendName
+        return root.unified || (p.backend || "openvpn") === root.backendName
       }))]
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.profileStates = text }
+  }
+
+  Process {
+    id: detectProc
+    property string sourcePath: ""
+    command: ["bash", "-lc", Model.detectKindScript(sourcePath)]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.actionFinished("detect", true, String(text || "").trim())
+    }
+  }
+
+  Process {
+    id: portalLoad
+    command: ["cat", root.portalsPath]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var parsed = JSON.parse(String(text || "").trim() || "[]")
+          root.portals = Array.isArray(parsed) ? parsed : []
+        } catch (e) {
+          root.portals = []
+        }
+      }
+    }
+  }
+
+  Process {
+    id: portalSave
+    onExited: function(code) { if (code !== 0) root.lastError = "Could not save portal list" }
   }
 
   Process {
@@ -351,9 +494,18 @@ Item {
       if (code === 0) {
         root.actionStatus = ""
         root.lastError = ""
+        // A switch is two steps; the second one starts here.
+        if (!wasUp && root.pendingConnect) {
+          var next = root.pendingConnect
+          root.pendingConnect = null
+          root.activeBackend = ""
+          root.connectProfile(next)
+          return
+        }
         root.refreshDetails()
         root.actionFinished("unit", true, wasUp ? "connected" : "disconnected")
       } else {
+        root.pendingConnect = null
         root.actionFinished("unit", false, wasUp ? "connection failed" : "disconnect failed")
         if (wasUp && root.caps.hasCipher) reasonProc.running = true
         else root.lastError = wasUp ? "Connection failed" : "Disconnect failed"
@@ -375,7 +527,7 @@ Item {
   Process {
     id: reasonProc
     command: ["bash", "-lc",
-      "journalctl -u " + Model.shellQuote("openvpn-client@" + root.profile + ".service")
+      "journalctl -u " + Model.shellQuote("openvpn-client@" + root.detailProfile + ".service")
       + " -n 40 --no-pager -o cat 2>/dev/null | "
       + "grep -oE 'AUTH_FAILED|TLS Error|Connection refused|Cannot open' | tail -1"]
     stdout: StdioCollector {

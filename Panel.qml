@@ -38,6 +38,9 @@ Panel {
   property string credentialsProfile: ""
   property string removeTarget: ""
   property string removeOrigin: ""
+  property string removeBackend: ""
+  property string importKind: ""
+  property bool portalFormOpen: false
   property int profileIndex: 0
   property bool cursorActive: false
 
@@ -79,6 +82,9 @@ Panel {
     credentialsProfile = ""
     removeTarget = ""
     removeOrigin = ""
+    removeBackend = ""
+    importKind = ""
+    portalFormOpen = false
   }
 
   function moveCursor(dy) {
@@ -90,7 +96,7 @@ Panel {
   function activateCursor() {
     if (!cursorActive || vpn.profiles.length === 0) return
     var p = vpn.profiles[profileIndex]
-    if (p) p.name === vpn.profile ? vpn.toggle() : vpn.switchTo(p.name, p.origin, "up")
+    if (p) vpn.activate(p)
   }
 
   Service {
@@ -114,7 +120,11 @@ Panel {
         root.importName = file.replace(/\.(ovpn|conf)$/i, "")
                               .replace(/[^A-Za-z0-9._-]/g, "-")
                               .substring(0, 32)
+        root.importKind = ""
         root.credentialsProfile = ""
+        vpn.detectConfigKind(message)
+      } else if (command === "detect" && ok) {
+        root.importKind = message
       } else if (command === "import" && ok) {
         root.closeForms()
       } else if (command === "credentials" && ok) {
@@ -269,8 +279,14 @@ Panel {
             PanelHero {
               id: hero
               width: parent.width
-              title: root.caps.label
-              meta: (vpn.profile ? vpn.profile + " · " : "") + vpn.stateLabel
+              title: vpn.unified && vpn.activeBackend
+                     ? Model.backend(vpn.activeBackend).label
+                     : root.caps.label
+              meta: {
+                if (!vpn.unified) return (vpn.profile ? vpn.profile + " · " : "") + vpn.stateLabel
+                if (!vpn.activeBackend) return "nothing connected"
+                return (vpn.activeName ? vpn.activeName + " · " : "") + vpn.stateLabel
+              }
               detail: vpn.connected ? "up " + Model.duration(vpn.uptimeSeconds) : ""
               foreground: root.foreground
               fontFamily: root.fontFamily
@@ -328,7 +344,7 @@ Panel {
                      : "—"
             }
             InfoPair {
-              visible: root.caps.hasCipher
+              visible: vpn.unified ? vpn.activeBackend === "openvpn" : root.caps.hasCipher
               label: "Cipher"
               value: vpn.cipher || "—"
             }
@@ -431,7 +447,7 @@ Panel {
             // gpclient keeps its portals in the GUI's own config and logs in
             // over SSO, so there is nothing here to enumerate or drive.
             Text {
-              visible: !root.caps.canList
+              visible: !root.caps.canList && !vpn.unified
               width: parent.width
               text: vpn.profile
                     ? "Portal " + vpn.profile + ". Connecting opens a terminal for the SSO login; "
@@ -458,9 +474,11 @@ Panel {
             Text {
               visible: root.caps.canList && vpn.helperInstalled && vpn.profiles.length === 0
               width: parent.width
-              text: vpn.backendName === "wireguard"
-                    ? "No interfaces in /etc/wireguard and none in NetworkManager."
-                    : "No profiles in /etc/openvpn/client."
+              text: vpn.unified
+                    ? "Nothing found. Add an OpenVPN or WireGuard config below, or a GlobalProtect portal."
+                    : vpn.backendName === "wireguard"
+                      ? "No interfaces in /etc/wireguard and none in NetworkManager."
+                      : "No profiles in /etc/openvpn/client."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -472,15 +490,15 @@ Panel {
               ProfileRow {
                 width: column.width
                 hasCursor: root.cursorActive && root.profileIndex === index
-                onActivated: profile.name === vpn.profile
-                             ? vpn.toggle()
-                             : vpn.switchTo(profile.name, profile.origin, "up")
-                onAutostartToggled: vpn.setAutostart(profile.name, profile.origin, !profile.autostart)
+                onActivated: vpn.activate(profile)
+                onAutostartToggled: vpn.setAutostart(profile.name, profile.origin,
+                                                     !profile.autostart, profile.backend)
                 onCredentialsRequested: { root.closeForms(); root.credentialsProfile = profile.name }
                 onRemoveRequested: {
                   root.closeForms()
                   root.removeTarget = profile.name
                   root.removeOrigin = profile.origin
+                  root.removeBackend = profile.backend
                 }
                 onHoveredChanged: if (hovered) { root.cursorActive = true; root.profileIndex = index }
               }
@@ -512,6 +530,16 @@ Panel {
               fontFamily: root.fontFamily
               onClicked: { root.closeForms(); vpn.pickConfigFile() }
             }
+            // GlobalProtect portals are not files, so they get their own entry.
+            Button {
+              visible: root.caps.canPortals === true
+              text: "Add portal"
+              iconText: "󰇧"
+              bordered: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: { root.closeForms(); root.portalFormOpen = true }
+            }
             Button {
               text: "Refresh"
               iconText: "󰑐"
@@ -542,6 +570,18 @@ Panel {
               font.pixelSize: Style.font.caption
               elide: Text.ElideMiddle
             }
+            Text {
+              width: parent.width
+              text: root.importKind === "unknown"
+                    ? "Not recognised as an OpenVPN or WireGuard config."
+                    : root.importKind
+                      ? "Detected: " + Model.backend(root.importKind).label
+                      : "Checking file…"
+              color: root.importKind === "unknown" ? root.urgent : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
             TextField {
               width: parent.width
               text: root.importName
@@ -557,9 +597,10 @@ Panel {
                 text: "Import"
                 bordered: true
                 enabled: /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(root.importName)
+                         && root.importKind !== "" && root.importKind !== "unknown"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
-                onClicked: vpn.importConfig(root.importPath, root.importName)
+                onClicked: vpn.importConfig(root.importPath, root.importName, root.importKind)
               }
               Button {
                 text: "Cancel"
@@ -622,6 +663,59 @@ Panel {
             }
           }
 
+          // ── Portal form ─────────────────────────────────────────────────
+          Column {
+            visible: root.portalFormOpen
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSeparator { foreground: root.foreground }
+            PanelSectionHeader {
+              text: "ADD GLOBALPROTECT PORTAL"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+            Text {
+              width: parent.width
+              text: "The portal host, e.g. vpn.example.com. Connecting opens a terminal "
+                    + "for the SSO login."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+            TextField {
+              id: portalField
+              width: parent.width
+              placeholderText: "portal host"
+              foreground: root.foreground
+              onAccepted: savePortal.clicked()
+            }
+            Row {
+              spacing: Style.spacing.controlGap
+              Button {
+                id: savePortal
+                text: "Add"
+                bordered: true
+                enabled: portalField.text.trim() !== ""
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: {
+                  vpn.addPortal(portalField.text)
+                  portalField.text = ""
+                  root.portalFormOpen = false
+                }
+              }
+              Button {
+                text: "Cancel"
+                bordered: true
+                foreground: root.dim
+                fontFamily: root.fontFamily
+                onClicked: { portalField.text = ""; root.closeForms() }
+              }
+            }
+          }
+
           // ── Remove confirmation ─────────────────────────────────────────
           Column {
             visible: root.removeTarget !== ""
@@ -631,7 +725,9 @@ Panel {
             PanelSeparator { foreground: root.foreground }
             Text {
               width: parent.width
-              text: "Remove profile “" + root.removeTarget + "” and its stored credentials?"
+              text: root.removeBackend === "globalprotect"
+                    ? "Remove portal “" + root.removeTarget + "” from the list?"
+                    : "Remove profile “" + root.removeTarget + "” and its stored credentials?"
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -644,7 +740,7 @@ Panel {
                 bordered: true
                 foreground: root.urgent
                 fontFamily: root.fontFamily
-                onClicked: vpn.removeProfile(root.removeTarget, root.removeOrigin)
+                onClicked: vpn.removeProfile(root.removeTarget, root.removeOrigin, root.removeBackend)
               }
               Button {
                 text: "Cancel"
@@ -701,6 +797,9 @@ Panel {
     required property int index
 
     readonly property var profile: modelData
+    // In unified mode each row can come from a different backend, so the
+    // controls are decided here rather than for the widget as a whole.
+    readonly property var rowCaps: Model.capsFor(profile ? profile.backend : "")
     property bool hasCursor: false
     readonly property alias hovered: rowMouse.containsMouse
     readonly property bool isCurrent: profile && profile.name === vpn.profile
@@ -746,7 +845,7 @@ Panel {
       spacing: Style.space(2)
 
       PanelActionButton {
-        visible: root.caps.canAutostart
+        visible: row.rowCaps.canAutostart
         iconText: row.profile && row.profile.autostart ? "󰐫" : "󰐪"
         tooltipText: row.profile && row.profile.autostart ? "Disable autostart" : "Enable autostart"
         foreground: row.profile && row.profile.autostart ? root.foreground : root.dim
@@ -755,7 +854,7 @@ Panel {
         onClicked: row.autostartToggled()
       }
       PanelActionButton {
-        visible: root.caps.canCredentials
+        visible: row.rowCaps.canCredentials
         iconText: "󰌆"
         tooltipText: "Set credentials"
         foreground: row.profile && row.profile.hasAuth ? root.foreground : root.dim
@@ -783,7 +882,8 @@ Panel {
 
       Text {
         width: parent.width
-        text: (row.profile ? row.profile.name : "") + (row.isCurrent ? "  ·  bar profile" : "")
+        text: (row.profile ? row.profile.name : "")
+              + (!vpn.unified && row.isCurrent ? "  ·  bar profile" : "")
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
@@ -795,9 +895,11 @@ Panel {
         text: {
           if (!row.profile) return ""
           var bits = []
-          if (row.profile.remote)
+          // For portals the name is the host, so printing both reads as a stutter.
+          if (row.profile.remote && row.profile.remote !== row.profile.name)
             bits.push(row.profile.remote + (row.profile.port ? ":" + row.profile.port : ""))
-          if (row.profile.origin === "nm") bits.push("NetworkManager")
+          if (vpn.unified) bits.unshift(Model.backendBadge(row.profile))
+          else if (row.profile.origin === "nm") bits.push("NetworkManager")
           if (!row.profile.hasAuth) bits.push("no credentials")
           return bits.join("  ·  ")
         }

@@ -18,6 +18,23 @@ var HISTORY_POINTS = 60
 // can take it down, but cannot own bringing it up.
 
 var BACKENDS = {
+  // One widget for everything on the machine. Capabilities here are the union;
+  // per row the panel asks capsFor(profile.backend) instead, so a GlobalProtect
+  // portal in the list does not grow an autostart button it cannot honour.
+  unified: {
+    label: "VPN",
+    profileLabel: "Connection",
+    canConnect: true,
+    canDisconnect: true,
+    canList: true,
+    canAutostart: true,
+    canCredentials: true,
+    canImport: true,
+    canPortals: true,
+    connectNeedsTerminal: false,
+    hasCipher: true,
+    unified: true
+  },
   openvpn: {
     label: "OpenVPN",
     profileLabel: "Profile",
@@ -61,7 +78,20 @@ function backend(name) {
 }
 
 function backendNames() {
-  return ["openvpn", "wireguard", "globalprotect"]
+  return ["unified", "openvpn", "wireguard", "globalprotect"]
+}
+
+// In unified mode every row can come from a different backend, so controls are
+// decided per row rather than per widget.
+function capsFor(profileBackend) {
+  return BACKENDS[profileBackend] || BACKENDS.openvpn
+}
+
+function backendBadge(profile) {
+  if (!profile) return ""
+  if (profile.backend === "wireguard")
+    return profile.origin === "nm" ? "WireGuard · NM" : "WireGuard"
+  return backend(profile.backend).label
 }
 
 // ── Formatting ─────────────────────────────────────────────────────────────
@@ -236,7 +266,73 @@ function globalprotectStatusScript() {
   ].join(" ")
 }
 
+// Unified mode has no configured profile to ask about — it asks the machine
+// what is up. Backends are probed in order and the first live one wins, which
+// is also the honest answer: these tools fight over the default route, so
+// running two at once is not a state worth modelling.
+function unifiedStatusScript() {
+  return [
+    'b=""; name=""; origin=""; iface=""; state=inactive; since=""; enabled="";',
+
+    'u=$(systemctl list-units "openvpn-client@*.service" --state=active --no-legend --plain 2>/dev/null |',
+    '    awk \'NR==1 { print $1 }\');',
+    'if [ -n "$u" ]; then',
+    '  b=openvpn; origin=systemd; state=active;',
+    '  name=$(printf "%s" "$u" | sed -E "s/^openvpn-client@(.*)\\.service$/\\1/");',
+    '  since=$(date -d "$(systemctl show "$u" -p ActiveEnterTimestamp --value 2>/dev/null)" +%s 2>/dev/null || true);',
+    '  enabled=$(systemctl is-enabled "$u" 2>/dev/null || true);',
+    '  iface=' + FIRST_TUN + ';',
+    'fi;',
+
+    'if [ -z "$b" ]; then',
+    '  u=$(systemctl list-units "wg-quick@*.service" --state=active --no-legend --plain 2>/dev/null |',
+    '      awk \'NR==1 { print $1 }\');',
+    '  if [ -n "$u" ]; then',
+    '    b=wireguard; origin=wg-quick; state=active;',
+    '    name=$(printf "%s" "$u" | sed -E "s/^wg-quick@(.*)\\.service$/\\1/");',
+    '    since=$(date -d "$(systemctl show "$u" -p ActiveEnterTimestamp --value 2>/dev/null)" +%s 2>/dev/null || true);',
+    '    enabled=$(systemctl is-enabled "$u" 2>/dev/null || true);',
+    '    iface="$name";',
+    '  fi;',
+    'fi;',
+
+    'if [ -z "$b" ] && command -v nmcli >/dev/null 2>&1; then',
+    '  row=$(nmcli -t -f NAME,TYPE,DEVICE,STATE connection show --active 2>/dev/null |',
+    '        awk -F: \'$2 == "wireguard" { print; exit }\');',
+    '  if [ -n "$row" ]; then',
+    '    b=wireguard; origin=nm; state=active;',
+    '    name=$(printf "%s" "$row" | cut -d: -f1);',
+    '    iface=$(printf "%s" "$row" | cut -d: -f3);',
+    '    since=$(nmcli -g connection.timestamp connection show "$name" 2>/dev/null || true);',
+    '    a=$(nmcli -g connection.autoconnect connection show "$name" 2>/dev/null || true);',
+    '    [ "$a" = yes ] && enabled=enabled || enabled=disabled;',
+    '  fi;',
+    'fi;',
+
+    'if [ -z "$b" ]; then',
+    '  pid=$(pgrep -x gpclient 2>/dev/null | head -1);',
+    '  [ -z "$pid" ] && pid=$(pgrep -x gpservice 2>/dev/null | head -1);',
+    '  if [ -n "$pid" ]; then',
+    '    b=globalprotect; origin=process;',
+    '    iface=' + FIRST_TUN + ';',
+    '    if [ -n "$iface" ]; then state=active; else state=activating; fi;',
+    '    et=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d "[:space:]");',
+    '    [ -n "$et" ] && since=$(( $(date +%s) - et ));',
+    '  fi;',
+    'fi;',
+
+    'printf "backend=%s\\n" "$b";',
+    'printf "origin=%s\\n" "$origin";',
+    'printf "name=%s\\n" "$name";',
+    'printf "state=%s\\n" "$state";',
+    'printf "enabled=%s\\n" "$enabled";',
+    'printf "since=%s\\n" "$since";',
+    INTERFACE_SNIPPET
+  ].join(" ")
+}
+
 function statusScript(backendName, profile) {
+  if (backendName === "unified") return unifiedStatusScript()
   if (backendName === "wireguard") return wireguardStatusScript(profile)
   if (backendName === "globalprotect") return globalprotectStatusScript()
   return openvpnStatusScript(profile)
@@ -319,6 +415,39 @@ function parseNmProfiles(raw) {
     })
   }
   return out
+}
+
+// GlobalProtect portals have no system-wide registry, so the widget keeps its
+// own list under ~/.local/state. They are plain hostnames, nothing secret.
+function portalProfiles(portals) {
+  var out = []
+  for (var i = 0; i < (portals || []).length; i++) {
+    var name = String(portals[i] || "").trim()
+    if (!name) continue
+    out.push({
+      backend: "globalprotect",
+      origin: "process",
+      name: name,
+      remote: name,
+      port: "",
+      proto: "gp",
+      hasAuth: true,
+      state: "inactive",
+      autostart: false
+    })
+  }
+  return out
+}
+
+// Which kind of config the user just picked, so import does not need the user
+// to know. Checked on the head of the file only — inline certificates make
+// these files large and the markers are always near the top.
+function detectKindScript(path) {
+  var q = shellQuote(path)
+  return 'c=$(head -c 8192 ' + q + ' 2>/dev/null); ' +
+         'if printf "%s" "$c" | grep -qi "^\\[Interface\\]"; then echo wireguard; ' +
+         'elif printf "%s" "$c" | grep -qE "^[[:space:]]*remote "; then echo openvpn; ' +
+         'else echo unknown; fi'
 }
 
 function mergeProfiles(cached, nmProfiles, stateRaw, backendName) {

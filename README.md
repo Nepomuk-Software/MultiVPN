@@ -1,14 +1,23 @@
 # VPN for Omarchy
 
-A bar widget for OpenVPN, WireGuard and GlobalProtect. Toggle the tunnel from
-the bar, and open a popup for live throughput, connection details and profile
-management.
+One bar widget for every VPN on the machine. **Unified mode** — the default —
+lists OpenVPN profiles, WireGuard interfaces and GlobalProtect portals in a
+single panel, follows whichever one is connected, and switches between them
+with a click. Buttons add a config or a portal without leaving the panel.
+
+You can also pin an instance to a single backend if you prefer one icon per
+VPN; `allowMultiple` is on.
 
 | Backend | Connect / disconnect | Profile list | Autostart | Import | Credentials |
 |---|---|---|---|---|---|
 | **OpenVPN** (`openvpn-client@`) | yes | `/etc/openvpn/client` | yes | yes | yes |
 | **WireGuard** (`wg-quick@` and NetworkManager) | yes | `/etc/wireguard` + `nmcli` | yes | yes | n/a — keys live in the config |
 | **GlobalProtect** (`gpclient`) | disconnect yes, connect hands off | no | no | no | n/a — SSO |
+
+Unified mode probes the backends in order and the first live one wins. That is
+also the honest model: these tools all fight over the default route, so
+activating a connection takes down whatever is up first and starts the new one
+when that has finished.
 
 GlobalProtect is deliberately the thin one. `gpclient` has no status command,
 no systemd unit and an interactive SSO login, so the widget watches it, can take
@@ -28,7 +37,9 @@ same for all three.
   connect or switch, per-profile autostart, credentials and removal. WireGuard
   lists `wg-quick` units and NetworkManager connections side by side and
   switches each the right way.
-- **Import** — pick an `.ovpn` file and install it as a named profile.
+- **Import** — pick a file; the widget works out whether it is OpenVPN or
+  WireGuard, suggests a name, and installs it. GlobalProtect portals are added
+  by host name instead, since they are not files.
 
 ## Requirements
 
@@ -49,14 +60,13 @@ Reading the journal is optional in practice: without it the panel simply shows
 omarchy plugin add https://github.com/robinnepomukmai/omarchy-vpn.git --enable
 ```
 
-Then point the widget at a VPN:
+That is enough — unified mode needs no configuration. To pin an instance to one
+backend instead:
 
 ```bash
 omarchy bar set io.github.robinnepomukmai.vpn backend openvpn
 omarchy bar set io.github.robinnepomukmai.vpn profile work
 ```
-
-`allowMultiple` is on, so a second instance can watch a different backend.
 
 ## Privilege boundary
 
@@ -122,6 +132,18 @@ polkit.addRule(function (action, subject) {
 
 Without it, connecting raises the shell's polkit dialog. That works fine too.
 
+## Where things are stored
+
+| Path | What |
+|---|---|
+| `/var/lib/omarchy-vpn/profiles.json` | OpenVPN and `wg-quick` profiles, written by the helper |
+| NetworkManager | WireGuard connections, read live via `nmcli` |
+| `~/.local/state/omarchy-vpn/portals.json` | GlobalProtect portals, owned by you, plain host names |
+
+One known gap: `gpclient` redacts host names in its own log, so when more than
+one portal is configured the widget cannot tell which one is connected. It
+reports GlobalProtect as connected without marking a row.
+
 ## Usage
 
 | Where | Action |
@@ -147,8 +169,8 @@ o.bind("SUPER + ALT + V", "VPN toggle", "omarchy-shell io.github.robinnepomukmai
 
 | Key | Default | Effect |
 |---|---|---|
-| `backend` | `openvpn` | `openvpn`, `wireguard` or `globalprotect` |
-| `profile` | `work` | OpenVPN: the `openvpn-client@` instance. WireGuard: interface or NM connection name. GlobalProtect: the portal server, or empty for the GUI |
+| `backend` | `unified` | `unified` for everything at once, or `openvpn` / `wireguard` / `globalprotect` to pin one |
+| `profile` | *(empty)* | Pinned modes: which profile the icon controls. Unified mode: the favourite that right-click connects when nothing is up |
 | `intervalSec` | `5` | status interval while idle |
 | `showRate` | `false` | throughput next to the icon in the bar |
 | `highlightWhenConnected` | `false` | connected in the accent colour instead of plain |
