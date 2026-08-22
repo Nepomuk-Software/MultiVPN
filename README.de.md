@@ -40,9 +40,10 @@ Durchsatz — funktioniert für alle drei gleich.
   wechselt, dazu Autostart, Zugangsdaten und Entfernen pro Profil. WireGuard
   listet `wg-quick`-Units und NetworkManager-Verbindungen nebeneinander und
   schaltet jede auf ihrem eigenen Weg.
-- **Import** — Datei auswählen; das Widget erkennt selbst, ob OpenVPN oder
-  WireGuard, schlägt einen Namen vor und installiert. GlobalProtect-Portale
-  kommen stattdessen als Hostname dazu, sie sind ja keine Dateien.
+- **Import** — Datei über den Dialog wählen oder Pfad einfügen; das Widget
+  erkennt selbst, ob OpenVPN oder WireGuard, schlägt einen Namen vor und
+  installiert. GlobalProtect-Portale kommen stattdessen als Hostname dazu, sie
+  sind ja keine Dateien.
 
 ## Voraussetzungen
 
@@ -74,7 +75,12 @@ Schritt. `omarchy plugin add` führt weder Installer noch `sudo` aus, und dieses
 Plugin tut es auch nicht. Ohne den Helfer bleibt das Panel voll nutzbar, der
 Profilteil sagt dann, was fehlt.
 
-Vorher lesen, dann:
+Dafür gibt es im Panel den Knopf **Set up profile management**. Er öffnet ein
+Terminal und startet das Skript mit `sudo` — bewusst kein Passwortdialog: das
+Skript liegt in einem Verzeichnis, das du beschreiben kannst, und ein
+benutzerschreibbares Skript über `pkexec` zu starten ist eine
+Rechteausweitung wie aus dem Lehrbuch. Im Terminal siehst du außerdem, was es
+tut. Von Hand dasselbe:
 
 ```bash
 sudo bash ~/.config/omarchy/plugins/io.github.robinnepomukmai.vpn/system/install.sh

@@ -331,6 +331,29 @@ function unifiedStatusScript() {
   ].join(" ")
 }
 
+// What this machine can actually do. Without this the panel says "VPN" and
+// leaves you guessing which of the three it even covers here.
+function availabilityScript() {
+  return [
+    'have() { command -v "$1" >/dev/null 2>&1 && echo 1 || echo 0; };',
+    'printf "openvpn=%s\\n" "$(have openvpn)";',
+    'printf "wgquick=%s\\n" "$(have wg-quick)";',
+    'printf "nmcli=%s\\n" "$(have nmcli)";',
+    'printf "globalprotect=%s\\n" "$(have gpclient)";',
+    'printf "zenity=%s\\n" "$(have zenity)"'
+  ].join(" ")
+}
+
+// Human summary for the panel header.
+function availabilityLabel(av) {
+  var found = []
+  if (av.openvpn === "1") found.push("OpenVPN")
+  if (av.wgquick === "1" || av.nmcli === "1") found.push("WireGuard")
+  if (av.globalprotect === "1") found.push("GlobalProtect")
+  if (found.length === 0) return "no VPN tooling found"
+  return found.join(" · ") + " available"
+}
+
 function statusScript(backendName, profile) {
   if (backendName === "unified") return unifiedStatusScript()
   if (backendName === "wireguard") return wireguardStatusScript(profile)

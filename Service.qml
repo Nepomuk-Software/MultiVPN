@@ -41,6 +41,12 @@ Item {
   property var pendingConnect: null
   property var portals: []
 
+  // Which VPN tooling exists on this machine, so the panel can say so instead
+  // of leaving the user guessing what "VPN" covers here.
+  property var availability: ({})
+  readonly property string availabilityLabel: Model.availabilityLabel(availability)
+  readonly property bool hasFilePicker: availability.zenity === "1"
+
   // For OpenVPN and WireGuard this is a profile/interface name; for
   // GlobalProtect it is the portal server.
   readonly property string profile: {
@@ -123,6 +129,9 @@ Item {
   }
 
   function refreshProfiles() {
+    // Cheap, and it is how the panel notices the installer just ran.
+    if (!helperProc.running) helperProc.running = true
+    if (!availabilityProc.running) availabilityProc.running = true
     if (!caps.canList) return
     if (!cacheProc.running) cacheProc.running = true
     if ((unified || backendName === "wireguard") && !nmListProc.running) nmListProc.running = true
@@ -309,7 +318,21 @@ Item {
     credentialsProc.running = true
   }
 
-  function pickConfigFile() { if (!filePicker.running) filePicker.running = true }
+  function pickConfigFile() {
+    if (!hasFilePicker) return
+    if (!filePicker.running) filePicker.running = true
+  }
+
+  // The installer is deliberately NOT run through pkexec: it lives in a
+  // directory the user can write, and pkexec-ing a user-writable script is a
+  // textbook privilege escalation. A terminal asks for the password itself and
+  // shows what the script does, which is what you want before granting root.
+  function runSetup() {
+    if (!bar) return
+    var path = Qt.resolvedUrl("system/install.sh").toString().replace(/^file:\/\//, "")
+    bar.run("omarchy-launch-floating-terminal-with-presentation sudo bash " + Model.shellQuote(path))
+    actionFinished("setup", true, "opening terminal")
+  }
 
   readonly property string helperMissing:
     "Helper not installed — run system/install.sh from the plugin directory"
@@ -441,6 +464,15 @@ Item {
         return root.unified || (p.backend || "openvpn") === root.backendName
       }))]
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.profileStates = text }
+  }
+
+  Process {
+    id: availabilityProc
+    command: ["bash", "-lc", Model.availabilityScript()]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.availability = Model.parseKeyValues(text)
+    }
   }
 
   Process {

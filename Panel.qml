@@ -40,7 +40,9 @@ Panel {
   property string removeOrigin: ""
   property string removeBackend: ""
   property string importKind: ""
+  property bool importOpen: false
   property bool portalFormOpen: false
+  property bool setupOpen: false
   property int profileIndex: 0
   property bool cursorActive: false
 
@@ -84,7 +86,9 @@ Panel {
     removeOrigin = ""
     removeBackend = ""
     importKind = ""
+    importOpen = false
     portalFormOpen = false
+    setupOpen = false
   }
 
   function moveCursor(dy) {
@@ -121,6 +125,7 @@ Panel {
                               .replace(/[^A-Za-z0-9._-]/g, "-")
                               .substring(0, 32)
         root.importKind = ""
+        root.importOpen = true
         root.credentialsProfile = ""
         vpn.detectConfigKind(message)
       } else if (command === "detect" && ok) {
@@ -252,7 +257,11 @@ Panel {
         var key = String(t).toLowerCase()
         if (key === "v") vpn.toggle()
         else if (key === "r") { vpn.refresh(); vpn.refreshDetails(); vpn.refreshProfiles() }
-        else if (key === "n" && root.caps.canImport) vpn.pickConfigFile()
+        else if (key === "n" && root.caps.canImport) {
+          root.closeForms()
+          if (vpn.helperInstalled) { root.importOpen = true; vpn.pickConfigFile() }
+          else root.setupOpen = true
+        }
       }
 
       Flickable {
@@ -287,6 +296,8 @@ Panel {
                 if (!vpn.activeBackend) return "nothing connected"
                 return (vpn.activeName ? vpn.activeName + " · " : "") + vpn.stateLabel
               }
+              // The hero's detail slot is a fixed-width pill for something
+              // short; the availability line gets its own row below.
               detail: vpn.connected ? "up " + Model.duration(vpn.uptimeSeconds) : ""
               foreground: root.foreground
               fontFamily: root.fontFamily
@@ -307,6 +318,18 @@ Panel {
                 }
               }
             }
+          }
+
+          // Which VPN tooling this machine actually has. Without it the panel
+          // says "VPN" and leaves you guessing what that covers here.
+          Text {
+            visible: vpn.unified && !vpn.connected && !vpn.busy
+            width: parent.width
+            text: vpn.availabilityLabel
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
           }
 
           Text {
@@ -460,15 +483,28 @@ Panel {
               wrapMode: Text.WordWrap
             }
 
-            Text {
+            Column {
               visible: root.caps.canList && !vpn.helperInstalled
               width: parent.width
-              text: "Profile management is not set up — run system/install.sh from the plugin "
-                    + "directory with sudo. Everything else works without it."
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-              wrapMode: Text.WordWrap
+              spacing: Style.space(6)
+
+              Text {
+                width: parent.width
+                text: "OpenVPN and wg-quick configs live in root-owned directories, so listing "
+                      + "and importing them needs a one-time setup. Everything else already works."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.WordWrap
+              }
+              Button {
+                text: "Set up profile management"
+                iconText: "󰒓"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.setupOpen = true
+              }
             }
 
             Text {
@@ -521,14 +557,21 @@ Panel {
               fontFamily: root.fontFamily
               onClicked: vpn.connect()
             }
+            // Always offered. Without the helper it explains what is missing
+            // rather than being silently absent, which read as "not supported".
             Button {
-              visible: vpn.helperInstalled && root.caps.canImport
+              visible: root.caps.canImport
               text: "Add config"
               iconText: "󰐕"
               bordered: true
               foreground: root.foreground
               fontFamily: root.fontFamily
-              onClicked: { root.closeForms(); vpn.pickConfigFile() }
+              onClicked: {
+                root.closeForms()
+                if (!vpn.helperInstalled) { root.setupOpen = true; return }
+                root.importOpen = true
+                vpn.pickConfigFile()
+              }
             }
             // GlobalProtect portals are not files, so they get their own entry.
             Button {
@@ -551,41 +594,74 @@ Panel {
           }
 
           // ── Import form ─────────────────────────────────────────────────
+          // The path is editable on purpose: the file dialog is a convenience,
+          // not the only way in. Without zenity, or when it is cancelled, you
+          // can still paste a path.
           Column {
-            visible: root.importPath !== ""
+            visible: root.importOpen
             width: parent.width
             spacing: Style.space(6)
 
             PanelSeparator { foreground: root.foreground }
             PanelSectionHeader {
-              text: "IMPORT"
+              text: "ADD OPENVPN OR WIREGUARD CONFIG"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
-            Text {
+
+            Row {
               width: parent.width
-              text: root.importPath
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              elide: Text.ElideMiddle
+              spacing: Style.spacing.controlGap
+
+              TextField {
+                id: pathField
+                width: parent.width - browseButton.width - Style.spacing.controlGap
+                text: root.importPath
+                placeholderText: "path to an .ovpn or .conf file"
+                foreground: root.foreground
+                onTextChanged: {
+                  root.importPath = text
+                  root.importKind = ""
+                  detectDelay.restart()
+                }
+              }
+              Button {
+                id: browseButton
+                text: "Browse"
+                bordered: true
+                enabled: vpn.hasFilePicker
+                tooltipText: vpn.hasFilePicker ? "" : "zenity is not installed"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: vpn.pickConfigFile()
+              }
             }
+
+            // Typing a path should not spawn a probe per keystroke.
+            Timer {
+              id: detectDelay
+              interval: 400
+              onTriggered: if (root.importPath !== "") vpn.detectConfigKind(root.importPath)
+            }
+
             Text {
               width: parent.width
-              text: root.importKind === "unknown"
-                    ? "Not recognised as an OpenVPN or WireGuard config."
-                    : root.importKind
-                      ? "Detected: " + Model.backend(root.importKind).label
-                      : "Checking file…"
+              text: root.importPath === "" ? "Pick or paste a file to continue."
+                    : root.importKind === "unknown"
+                      ? "Not recognised as an OpenVPN or WireGuard config."
+                      : root.importKind
+                        ? "Detected: " + Model.backend(root.importKind).label
+                        : "Checking file…"
               color: root.importKind === "unknown" ? root.urgent : root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.WordWrap
             }
+
             TextField {
               width: parent.width
               text: root.importName
-              placeholderText: "Profile name"
+              placeholderText: "profile name"
               foreground: root.foreground
               onTextChanged: root.importName = text
               onAccepted: importButton.clicked()
@@ -659,6 +735,57 @@ Panel {
                 foreground: root.dim
                 fontFamily: root.fontFamily
                 onClicked: { userField.text = ""; passField.text = ""; root.closeForms() }
+              }
+            }
+          }
+
+          // ── Setup form ──────────────────────────────────────────────────
+          Column {
+            visible: root.setupOpen
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSeparator { foreground: root.foreground }
+            PanelSectionHeader {
+              text: "SET UP PROFILE MANAGEMENT"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+            Text {
+              width: parent.width
+              text: "Opens a terminal and runs system/install.sh with sudo. It installs a root "
+                    + "helper, a polkit action and two systemd units so the panel can list and "
+                    + "import root-owned configs. Undo with the same script and --uninstall."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+            Text {
+              width: parent.width
+              text: "It runs in a terminal, not through a password dialog, so you can read the "
+                    + "script before granting it root."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+            Row {
+              spacing: Style.spacing.controlGap
+              Button {
+                text: "Open terminal"
+                iconText: "󰆍"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: { vpn.runSetup(); root.setupOpen = false }
+              }
+              Button {
+                text: "Cancel"
+                bordered: true
+                foreground: root.dim
+                fontFamily: root.fontFamily
+                onClicked: root.closeForms()
               }
             }
           }

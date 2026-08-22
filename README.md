@@ -37,9 +37,10 @@ same for all three.
   connect or switch, per-profile autostart, credentials and removal. WireGuard
   lists `wg-quick` units and NetworkManager connections side by side and
   switches each the right way.
-- **Import** — pick a file; the widget works out whether it is OpenVPN or
-  WireGuard, suggests a name, and installs it. GlobalProtect portals are added
-  by host name instead, since they are not files.
+- **Import** — pick a file with the dialog or paste a path; the widget works
+  out whether it is OpenVPN or WireGuard, suggests a name, and installs it.
+  GlobalProtect portals are added by host name instead, since they are not
+  files.
 
 ## Requirements
 
@@ -48,7 +49,7 @@ same for all three.
 | one of: `openvpn`, `wireguard-tools` (for `wg-quick@`), NetworkManager ≥ 1.16 (for WireGuard connections), `globalprotect-openconnect` | whichever backend you use |
 | `bash`, `systemctl`, `ip`, `journalctl`, `cat` | reading status, addresses, routes and the connection log |
 | membership in a group that can read the system journal (usually `wheel`) | server endpoint and cipher come from the journal |
-| `zenity` | the file dialog for importing a config |
+| `zenity` | the file dialog for importing a config — optional, the path can also be pasted |
 | `pkexec` and `python3` | only for profile management, see below |
 
 Reading the journal is optional in practice: without it the panel simply shows
@@ -83,7 +84,11 @@ what `system/install.sh` sets up, and it is a deliberate, separate, manual step 
 `omarchy plugin add` never runs installers or `sudo`, and this plugin does not
 either. Without it the panel stays fully usable and the profile section says so.
 
-Read the script before running it:
+The panel offers a **Set up profile management** button for this; it opens a
+terminal and runs the script with `sudo`, so you can read what it does before
+granting it root. Deliberately not a password dialog: the script sits in a
+directory you can write, and running a user-writable script through `pkexec` is
+a textbook privilege escalation. Same thing by hand:
 
 ```bash
 sudo bash ~/.config/omarchy/plugins/io.github.robinnepomukmai.vpn/system/install.sh
@@ -154,6 +159,7 @@ reports GlobalProtect as connected without marking a row.
 | Panel, `v` | tunnel on/off |
 | Panel, `r` | refresh everything |
 | Panel, `n` | add a config |
+| Panel header | which VPN tooling this machine has, and what is connected |
 | Panel, ↑ ↓ / Enter | pick a profile and connect |
 | Panel, Esc | close an open form, otherwise the panel |
 
