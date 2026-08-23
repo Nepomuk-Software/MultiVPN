@@ -485,7 +485,9 @@ Item {
 
   Process {
     id: cacheProc
-    command: ["cat", root.cachePath]
+    // head(1) rather than cat: the cache is a file this widget does not write,
+    // and a StdioCollector buffers whatever it is handed.
+    command: ["bash", "-lc", "head -c " + Model.MAX_OUTPUT + " " + Model.shellQuote(root.cachePath) + " 2>/dev/null"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.cachedProfiles = Model.parseProfiles(text)
@@ -521,7 +523,7 @@ Item {
         root.refresh()
         root.actionFinished("import", true, "imported into NetworkManager")
       } else {
-        root.lastError = String(stderr.text || "").trim() || "NetworkManager import failed"
+        root.lastError = Model.clamp(stderr.text, Model.MAX_FIELD).trim() || "NetworkManager import failed"
         root.actionFinished("import", false, root.lastError)
       }
     }
@@ -542,18 +544,20 @@ Item {
     command: ["bash", "-lc", Model.detectKindScript(sourcePath)]
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.actionFinished("detect", true, String(text || "").trim())
+      onStreamFinished: root.actionFinished("detect", true, Model.clamp(text, Model.MAX_FIELD).trim())
     }
   }
 
   Process {
     id: portalLoad
-    command: ["cat", root.portalsPath]
+    command: ["bash", "-lc", "head -c " + Model.MAX_OUTPUT + " " + Model.shellQuote(root.portalsPath) + " 2>/dev/null"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
         try {
-          var parsed = JSON.parse(String(text || "").trim() || "[]")
+          // A whole JSON document, not one field: MAX_FIELD would truncate a
+          // valid portal list into a parse error.
+          var parsed = JSON.parse(Model.clamp(text).trim() || "[]")
           root.portals = Array.isArray(parsed) ? parsed : []
         } catch (e) {
           root.portals = []
@@ -604,7 +608,7 @@ Item {
     onExited: function(code) {
       root.actionStatus = ""
       if (code === 0) { root.lastError = ""; root.refreshProfiles() }
-      else root.lastError = String(stderr.text || "").trim() || "nmcli failed"
+      else root.lastError = Model.clamp(stderr.text, Model.MAX_FIELD).trim() || "nmcli failed"
     }
   }
 
@@ -614,11 +618,11 @@ Item {
     command: ["bash", "-lc",
       "journalctl -u " + Model.shellQuote("openvpn-client@" + root.lastAttemptName + ".service")
       + " -n 40 --no-pager -o cat 2>/dev/null | "
-      + "grep -oE 'AUTH_FAILED|TLS Error|Connection refused|Cannot open' | tail -1"]
+      + "grep -oE 'AUTH_FAILED|TLS Error|Connection refused|Cannot open' | tail -1 | head -c 64"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        var why = String(text || "").trim()
+        var why = Model.clamp(text, Model.MAX_FIELD).trim()
         root.lastError = "Connection failed" + (why ? ": " + why : "")
       }
     }
@@ -635,12 +639,12 @@ Item {
         root.lastError = ""
         root.refreshProfiles()
         root.refresh()
-        root.actionFinished(label, true, String(stdout.text || "").trim())
+        root.actionFinished(label, true, Model.clamp(stdout.text, Model.MAX_FIELD).trim())
       } else if (code === 126 || code === 127) {
         // pkexec: dismissed or not authorised.
         root.actionFinished(label, false, "cancelled")
       } else {
-        root.lastError = String(stderr.text || "").trim() || "Action failed"
+        root.lastError = Model.clamp(stderr.text, Model.MAX_FIELD).trim() || "Action failed"
         root.actionFinished(label, false, root.lastError)
       }
     }
@@ -659,7 +663,7 @@ Item {
         root.refreshProfiles()
         root.actionFinished("credentials", true, "credentials set")
       } else {
-        root.lastError = String(stderr.text || "").trim() || "Could not set credentials"
+        root.lastError = Model.clamp(stderr.text, Model.MAX_FIELD).trim() || "Could not set credentials"
         root.actionFinished("credentials", false, root.lastError)
       }
     }
@@ -673,7 +677,9 @@ Item {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        var path = String(text || "").trim()
+        // A path, not a label: MAX_FIELD would quietly point the import at a
+        // different file rather than at the one that was picked.
+        var path = Model.clamp(text, Model.MAX_PATH).trim()
         if (path !== "") root.actionFinished("pick", true, path)
       }
     }

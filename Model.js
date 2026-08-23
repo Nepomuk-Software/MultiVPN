@@ -5,6 +5,51 @@
 
 var HISTORY_POINTS = 60
 
+// Profile names, endpoints, routes and journal text are read off the machine
+// and out of files this widget does not write, then handed to QML and to a
+// helper. Two ceilings apply to all of it.
+//
+// A byte ceiling, because nothing here is bounded by anything else: a config
+// dropped into /etc/openvpn/client, a cache rewritten by hand, or a journal
+// that has been talked at can all be arbitrarily large, and this runs inside
+// the process that draws the desktop. Commands are capped by head(1) where they
+// are built and again by clamp() where they are parsed.
+//
+// And a plain-text ceiling, because Qt's Text defaults to AutoText and renders
+// what looks like markup as markup. Text sinks this plugin owns are set to
+// PlainText; the ones it borrows from qs.Ui get their string through plain()
+// first, which strips the characters that trigger the guess.
+var MAX_OUTPUT = 262144   // bytes accepted from one command
+var MAX_FIELD = 512       // characters kept for one displayed value
+var MAX_PATH = 4096       // PATH_MAX: a path must not be silently shortened
+
+function clamp(raw, max) {
+  var s = String(raw === undefined || raw === null ? "" : raw)
+  var cap = max || MAX_OUTPUT
+  return s.length > cap ? s.substring(0, cap) : s
+}
+
+function plain(value, max) {
+  return String(value === undefined || value === null ? "" : value)
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
+    .replace(/[<>&]/g, "")
+    .substring(0, max || MAX_FIELD)
+}
+
+// Every script this file builds ends up in a StdioCollector, which buffers
+// whatever it is given. One wrapper so no script can forget its ceiling.
+//
+// The exit status needs carrying across the pipe by hand. A pipeline reports
+// head's status, which is always 0, and the NetworkManager import reads that
+// status to decide whether it worked — left alone, every failed import would
+// report as a success. PIPESTATUS[0] is the group's own status. 141 is the
+// group being killed by SIGPIPE because head had seen enough, which is this
+// wrapper's doing rather than the command's failure, so it reads as success.
+function capped(script) {
+  return "{ " + script + " ; } | head -c " + MAX_OUTPUT
+       + "; s=${PIPESTATUS[0]}; [ \"$s\" = 141 ] && s=0; exit \"$s\""
+}
+
 // ── Backends ───────────────────────────────────────────────────────────────
 //
 // Roughly two thirds of this widget never cared which VPN it was looking at:
@@ -143,7 +188,7 @@ function stateLabel(unitState, address, intent) {
 // extended script cannot break an older panel.
 function parseKeyValues(raw) {
   var out = {}
-  var lines = String(raw || "").split("\n")
+  var lines = clamp(raw).split("\n")
   for (var i = 0; i < lines.length; i++) {
     var line = lines[i]
     var eq = line.indexOf("=")
@@ -155,7 +200,7 @@ function parseKeyValues(raw) {
 
 function parseProfiles(raw) {
   try {
-    var data = JSON.parse(String(raw || "").trim() || "{}")
+    var data = JSON.parse(clamp(raw).trim() || "{}")
     return Array.isArray(data.profiles) ? data.profiles : []
   } catch (e) {
     return []
@@ -186,7 +231,7 @@ function shellQuote(value) {
 // Routes keep their "default" entry here; the panel hides it from the list but
 // needs it to spot two tunnels claiming the default route.
 function unifiedStatusScript() {
-  return [
+  return capped([
     'claimed=" ";',
     'emit() {',
     '  a=""; m=""; r=""; k="";',
@@ -249,14 +294,14 @@ function unifiedStatusScript() {
     '  [ -n "$et" ] && gs=$(( $(date +%s) - et ));',
     '  emit globalprotect process "" "$gi" "$gs" "";',
     'fi'
-  ].join(" ")
+  ].join(" "))
 }
 
 // One "conn=" line into an object. Unknown or short lines are dropped rather
 // than producing half-filled entries.
 function parseConnections(raw) {
   var out = []
-  var lines = String(raw || "").split("\n")
+  var lines = clamp(raw).split("\n")
   for (var i = 0; i < lines.length; i++) {
     if (lines[i].indexOf("conn=") !== 0) continue
     var f = lines[i].substring(5).split("|")
@@ -282,14 +327,14 @@ function parseConnections(raw) {
 // What this machine can actually do. Without this the panel says "VPN" and
 // leaves you guessing which of the three it even covers here.
 function availabilityScript() {
-  return [
+  return capped([
     'have() { command -v "$1" >/dev/null 2>&1 && echo 1 || echo 0; };',
     'printf "openvpn=%s\\n" "$(have openvpn)";',
     'printf "wgquick=%s\\n" "$(have wg-quick)";',
     'printf "nmcli=%s\\n" "$(have nmcli)";',
     'printf "globalprotect=%s\\n" "$(have gpclient)";',
     'printf "zenity=%s\\n" "$(have zenity)"'
-  ].join(" ")
+  ].join(" "))
 }
 
 // Human summary for the panel header.
@@ -313,7 +358,7 @@ function statusScript() {
 function detailScript(backendName, profile) {
   if (backendName !== "openvpn") return 'true'
   var u = shellQuote("openvpn-client@" + profile + ".service")
-  return [
+  return capped([
     'log=$(journalctl -u ' + u + ' -n 400 --no-pager -o cat 2>/dev/null);',
     'printf "server=%s\\n" "$(printf "%s" "$log" |',
     '  grep -oE "Peer Connection Initiated with \\[AF_INET[6]?\\][^ ]+" | tail -1 |',
@@ -321,7 +366,7 @@ function detailScript(backendName, profile) {
     'printf "cipher=%s\\n" "$(printf "%s" "$log" |',
     '  grep -oE "Data Channel: (cipher|using cipher) .[A-Za-z0-9-]+." | tail -1 |',
     '  grep -oE "[A-Z][A-Z0-9-]{3,}")"'
-  ].join(" ")
+  ].join(" "))
 }
 
 // State of every known profile in one go — one "name=active:enabled" line each.
@@ -348,7 +393,7 @@ function profileStateScript(entries) {
         '"$(systemctl is-enabled ' + u + ' 2>/dev/null || true)"')
     }
   }
-  return lines.join("; ")
+  return capped(lines.join("; "))
 }
 
 // NetworkManager owns its own WireGuard connections, so they are listed live
@@ -358,7 +403,7 @@ function profileStateScript(entries) {
 // Peer lines read "endpoint=host:port allowed-ips=..." with the port's colon
 // backslash-escaped and no spaces around the equals sign.
 function nmWireguardListScript() {
-  return [
+  return capped([
     'command -v nmcli >/dev/null 2>&1 || exit 0;',
     // A literal backslash through JS, bash and sed is a quoting swamp, so the
     // unescaping uses parameter expansion against a backslash built from its
@@ -375,12 +420,12 @@ function nmWireguardListScript() {
     '  ai=${ai#allowed-ips=}; ai=${ai//"$bs"/};',
     '  printf "%s\\t%s\\t%s\\n" "$n" "$ep" "$ai";',
     'done'
-  ].join(" ")
+  ].join(" "))
 }
 
 function parseNmProfiles(raw) {
   var out = []
-  var lines = String(raw || "").split("\n")
+  var lines = clamp(raw).split("\n")
   for (var i = 0; i < lines.length; i++) {
     if (!lines[i]) continue
     var parts = lines[i].split("\t")
@@ -430,10 +475,10 @@ function portalProfiles(portals) {
 // these files large and the markers are always near the top.
 function detectKindScript(path) {
   var q = shellQuote(path)
-  return 'c=$(head -c 8192 ' + q + ' 2>/dev/null); ' +
+  return capped('c=$(head -c 8192 ' + q + ' 2>/dev/null); ' +
          'if printf "%s" "$c" | grep -qi "^\\[Interface\\]"; then echo wireguard; ' +
          'elif printf "%s" "$c" | grep -qE "^[[:space:]]*remote "; then echo openvpn; ' +
-         'else echo unknown; fi'
+         'else echo unknown; fi')
 }
 
 // NetworkManager imports a wg-quick config file directly, with no root helper
@@ -443,7 +488,7 @@ function detectKindScript(path) {
 function nmImportScript(path, name) {
   var f = shellQuote(path)
   var n = shellQuote(name)
-  return [
+  return capped([
     'out=$(nmcli connection import type wireguard file ' + f + ' 2>&1) || {',
     '  printf "%s" "$out" >&2; exit 1;',
     '};',
@@ -451,7 +496,7 @@ function nmImportScript(path, name) {
     'if [ -n "$id" ] && [ "$id" != ' + n + ' ]; then',
     '  nmcli connection modify "$id" connection.id ' + n + ' >/dev/null 2>&1 || true;',
     'fi'
-  ].join(" ")
+  ].join(" "))
 }
 
 function mergeProfiles(cached, nmProfiles, stateRaw, backendName) {

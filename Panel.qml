@@ -49,9 +49,12 @@ Panel {
   property int profileIndex: 0
   property bool cursorActive: false
 
+  // BarIconButton and WidgetButton come from qs.Ui and decide their own
+  // textFormat, so the profile name and the tunnel address are stripped here
+  // rather than trusted there.
   readonly property string barTooltip: {
-    var base = root.caps.label + (vpn.profile ? " " + vpn.profile : "") + " " + vpn.stateLabel
-    if (vpn.connected) return base + " · " + vpn.address
+    var base = root.caps.label + (vpn.profile ? " " + Model.plain(vpn.profile) : "") + " " + vpn.stateLabel
+    if (vpn.connected) return base + " · " + Model.plain(vpn.address)
     if (vpn.failed) return base + " · right-click to retry"
     return base + " · right-click to connect"
   }
@@ -310,11 +313,12 @@ Panel {
               title: vpn.unified && vpn.activeBackend
                      ? Model.backend(vpn.activeBackend).label
                      : root.caps.label
+              // PanelHero is a qs.Ui component; the profile name goes in stripped.
               meta: {
-                if (!vpn.unified) return (vpn.profile ? vpn.profile + " · " : "") + vpn.stateLabel
+                if (!vpn.unified) return (vpn.profile ? Model.plain(vpn.profile) + " · " : "") + vpn.stateLabel
                 var n = vpn.activeConnections.length
                 if (n === 0) return "nothing connected"
-                var label = (vpn.activeName ? vpn.activeName + " · " : "") + vpn.stateLabel
+                var label = (vpn.activeName ? Model.plain(vpn.activeName) + " · " : "") + vpn.stateLabel
                 return n > 1 ? label + "  ·  " + n + " connected" : label
               }
               // The hero's detail slot is a fixed-width pill for something
@@ -324,6 +328,7 @@ Panel {
               fontFamily: root.fontFamily
               iconComponent: Component {
                 Text {
+                  textFormat: Text.PlainText
                   text: "󰖂"
                   color: vpn.connected ? root.foreground : root.dim
                   font.family: root.fontFamily
@@ -338,6 +343,7 @@ Panel {
           // Which VPN tooling this machine actually has. Without it the panel
           // says "VPN" and leaves you guessing what that covers here.
           Text {
+            textFormat: Text.PlainText
             visible: vpn.unified && !vpn.connected && !vpn.busy
             width: parent.width
             text: vpn.availabilityLabel
@@ -348,6 +354,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             visible: vpn.actionStatus !== "" || vpn.lastError !== ""
             width: parent.width
             text: vpn.actionStatus !== "" ? vpn.actionStatus : vpn.lastError
@@ -359,6 +366,7 @@ Panel {
 
           // Only full-tunnel configs actually collide, and only here.
           Text {
+            textFormat: Text.PlainText
             visible: vpn.defaultRouteCount > 1
             width: parent.width
             text: "Two connections claim the default route. Whichever the kernel prefers wins; "
@@ -427,6 +435,7 @@ Panel {
               spacing: Style.spacing.xxs
 
               Text {
+                textFormat: Text.PlainText
                 text: "Allowed IPs"
                 color: root.foreground
                 opacity: 0.6
@@ -434,6 +443,7 @@ Panel {
                 font.pixelSize: Style.font.bodySmall
               }
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 text: parent.entries.join("  ·  ")
                 color: root.foreground
@@ -454,6 +464,7 @@ Panel {
               spacing: Style.spacing.xxs
 
               Text {
+                textFormat: Text.PlainText
                 text: "Routes"
                 color: root.foreground
                 opacity: 0.6
@@ -461,6 +472,7 @@ Panel {
                 font.pixelSize: Style.font.bodySmall
               }
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 text: vpn.routes.join("  ·  ")
                 color: root.foreground
@@ -493,6 +505,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               visible: vpn.rxUnavailable
               width: parent.width
               text: "DCO does not report received bytes to the kernel counters — "
@@ -508,6 +521,7 @@ Panel {
               spacing: Style.space(16)
 
               Text {
+                textFormat: Text.PlainText
                 text: vpn.rxUnavailable ? "↓ n/a" : "↓ " + Model.rate(vpn.rxRate) + "B/s"
                 color: root.foreground
                 opacity: vpn.rxUnavailable ? 0.5 : 1
@@ -515,6 +529,7 @@ Panel {
                 font.pixelSize: Style.font.bodySmall
               }
               Text {
+                textFormat: Text.PlainText
                 text: "↑ " + Model.rate(vpn.txRate) + "B/s"
                 color: root.foreground
                 font.family: root.fontFamily
@@ -522,6 +537,7 @@ Panel {
               }
               Item { width: Math.max(0, parent.width - Style.space(230)); height: 1 }
               Text {
+                textFormat: Text.PlainText
                 text: (vpn.rxUnavailable ? "—" : Model.bytes(vpn.rxBytes))
                       + " ↓  " + Model.bytes(vpn.txBytes) + " ↑"
                 color: root.foreground
@@ -548,6 +564,7 @@ Panel {
             // gpclient keeps its portals in the GUI's own config and logs in
             // over SSO, so there is nothing here to enumerate or drive.
             Text {
+              textFormat: Text.PlainText
               visible: !root.caps.canList && !vpn.unified
               width: parent.width
               text: vpn.profile
@@ -567,6 +584,7 @@ Panel {
               spacing: Style.space(6)
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 text: "OpenVPN and wg-quick configs live in root-owned directories, so listing "
                       + "and importing them needs a one-time setup. Everything else already works."
@@ -586,6 +604,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               visible: root.caps.canList && vpn.helperInstalled && vpn.profiles.length === 0
               width: parent.width
               text: vpn.unified
@@ -718,6 +737,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               text: root.importPath === "" ? "Pick or paste a file to continue."
                     : root.importKind === "unknown"
@@ -739,6 +759,7 @@ Panel {
               spacing: Style.space(4)
 
               Text {
+                textFormat: Text.PlainText
                 text: "Install into"
                 color: root.foreground
                 opacity: 0.6
@@ -771,6 +792,7 @@ Panel {
                 }
               }
               Text {
+                textFormat: Text.PlainText
                 visible: !vpn.canImportToWgQuick
                 width: parent.width
                 text: "wg-quick needs the wireguard-tools package; without it there is no "
@@ -827,7 +849,7 @@ Panel {
 
             PanelSeparator { foreground: root.foreground }
             PanelSectionHeader {
-              text: "CREDENTIALS · " + root.credentialsProfile.toUpperCase()
+              text: "CREDENTIALS · " + Model.plain(root.credentialsProfile).toUpperCase()
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
@@ -883,6 +905,7 @@ Panel {
               fontFamily: root.fontFamily
             }
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               text: "Opens a terminal and runs system/install.sh with sudo. It installs a root "
                     + "helper, a polkit action and two systemd units so the panel can list and "
@@ -893,6 +916,7 @@ Panel {
               wrapMode: Text.WordWrap
             }
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               text: "It runs in a terminal, not through a password dialog, so you can read the "
                     + "script before granting it root."
@@ -934,6 +958,7 @@ Panel {
               fontFamily: root.fontFamily
             }
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               text: "The portal host, e.g. vpn.example.com. Connecting opens a terminal "
                     + "for the SSO login."
@@ -982,6 +1007,7 @@ Panel {
 
             PanelSeparator { foreground: root.foreground }
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               text: root.removeBackend === "globalprotect"
                     ? "Remove portal “" + root.removeTarget + "” from the list?"
@@ -1024,6 +1050,7 @@ Panel {
     spacing: Style.space(8)
 
     Text {
+      textFormat: Text.PlainText
       id: pairLabel
       text: parent.label
       color: root.foreground
@@ -1036,6 +1063,7 @@ Panel {
       height: 1
     }
     Text {
+      textFormat: Text.PlainText
       id: pairValue
       text: parent.value
       color: root.foreground
@@ -1175,6 +1203,7 @@ Panel {
       spacing: 0
 
       Text {
+        textFormat: Text.PlainText
         width: parent.width
         text: (row.profile ? row.profile.name : "")
               + (!vpn.unified && row.isCurrent ? "  ·  bar profile" : "")
@@ -1184,6 +1213,7 @@ Panel {
         elide: Text.ElideRight
       }
       Text {
+        textFormat: Text.PlainText
         width: parent.width
         visible: text !== ""
         text: {

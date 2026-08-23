@@ -57,6 +57,12 @@ BACKENDS = {
     },
 }
 
+# A VPN config is a few kilobytes, or a few hundred with certificates inlined.
+# The path comes from the caller, so without a ceiling `import /dev/zero` is a
+# root process reading until the machine gives up. Everything this helper reads
+# off disk goes through it.
+MAX_CONFIG_BYTES = 1048576
+
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 # wg-quick derives the interface name from the file name, and the kernel caps
 # interface names at 15 characters.
@@ -103,17 +109,26 @@ def read_as_caller(path):
     Otherwise anyone allowed to run this helper could have arbitrary root-owned
     files copied into a config directory.
     """
+    def bounded(fh):
+        # One byte past the limit, so "exactly at the limit" and "truncated"
+        # stay distinguishable and the oversized case is refused rather than
+        # silently imported half-written.
+        data = fh.read(MAX_CONFIG_BYTES + 1)
+        if len(data) > MAX_CONFIG_BYTES:
+            die("%s is larger than %d bytes" % (path, MAX_CONFIG_BYTES))
+        return data
+
     uid = caller_uid()
     if uid is None:
         with open(path, "rb") as fh:
-            return fh.read()
+            return bounded(fh)
 
     gid = pwd.getpwuid(uid).pw_gid
     os.setresgid(gid, gid, 0)
     os.setresuid(uid, uid, 0)
     try:
         with open(path, "rb") as fh:
-            return fh.read()
+            return bounded(fh)
     finally:
         os.setresuid(0, 0, 0)
         os.setresgid(0, 0, 0)
@@ -196,9 +211,13 @@ PARSERS = {"openvpn": parse_openvpn, "wireguard": parse_wireguard}
 
 
 def read_lines(path):
+    # Used while building the cache, i.e. over every file in the config
+    # directories. One oversized file there must not take the helper down with
+    # it, so it is truncated rather than refused: the parser only reads a
+    # handful of directives from the top anyway.
     try:
         with open(path, "r", errors="replace") as fh:
-            return fh.readlines()
+            return fh.read(MAX_CONFIG_BYTES).splitlines(True)
     except OSError as exc:
         die("cannot read %s: %s" % (path, exc))
 
