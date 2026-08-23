@@ -29,6 +29,8 @@ it down, and hands connecting to a terminal or the vendor GUI. Everything that
 comes off the tunnel interface — address, routes, uptime, throughput — works the
 same for all three.
 
+*(Deutsche Fassung: [README.de.md](README.de.md).)*
+
 ![Preview](preview.png)
 
 - **Bar icon** — dimmed while down, solid while up, pulsing during a transition.
