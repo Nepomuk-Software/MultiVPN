@@ -27,8 +27,8 @@ Item {
   }
 
   readonly property string backendName: {
-    var raw = String(setting("backend", "openvpn"))
-    return Model.BACKENDS[raw] ? raw : "openvpn"
+    var raw = String(setting("backend", "unified"))
+    return Model.BACKENDS[raw] ? raw : "unified"
   }
   readonly property var caps: Model.backend(backendName)
   readonly property bool unified: backendName === "unified"
@@ -78,7 +78,7 @@ Item {
   // For OpenVPN and WireGuard this is a profile/interface name; for
   // GlobalProtect it is the portal server.
   readonly property string profile: {
-    var raw = String(setting("profile", backendName === "openvpn" ? "work" : ""))
+    var raw = String(setting("profile", ""))
     return /^[A-Za-z0-9._:@\/-]*$/.test(raw) ? raw : ""
   }
   readonly property int intervalSec: Math.max(1, Number(setting("intervalSec", 5)))
