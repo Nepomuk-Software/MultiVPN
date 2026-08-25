@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.nepomuk-software.multivpn",
   "name": "MultiVPN",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Nepomuk Software",
   "license": "MIT",
   "description": "One bar widget for every VPN on the machine — OpenVPN, OpenVPN 3, WireGuard and GlobalProtect side by side, with throughput, connection details and config import.",
