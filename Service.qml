@@ -18,7 +18,7 @@ Item {
   id: root
 
   property var settings: ({})
-  property bool detailed: false        // panel open → poll faster, fetch details
+  property bool detailed: false        // a popup is open → poll faster, fetch details
   property QtObject bar: null          // for the one action that needs a terminal
 
   readonly property string helperPath: "/usr/local/bin/multivpn-admin"
@@ -819,8 +819,11 @@ Item {
     onTriggered: root.uptimeSeconds = Model.uptimeSeconds(root.since, Date.now())
   }
 
+  // Profile states feed the row switches, so during a transition they follow
+  // the same hurry as the status poll — a connect the user just clicked must
+  // not sit on a stale switch for five seconds.
   Timer {
-    interval: 5000
+    interval: root.busy ? 1000 : 5000
     running: root.detailed
     repeat: true
     triggeredOnStart: true

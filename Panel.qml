@@ -8,7 +8,7 @@ import "Model.js" as Model
 
 // Bar icon plus popup for one openvpn-client@<profile>.service instance.
 //
-//   left = panel · right = tunnel on/off · middle = refresh
+//   left = panel · right = quick connect picker · middle = refresh
 //
 // Everything that reads works without root. Profile management goes through
 // pkexec and the helper in system/. Without that helper the panel stays fully
@@ -49,12 +49,32 @@ Panel {
   property int profileIndex: 0
   property bool cursorActive: false
 
+  // The right-click quick picker. Its cursor is its own — the main panel's
+  // keyboard state must not move when the picker does.
+  property bool quickOpen: false
+  property int quickIndex: 0
+  property bool quickCursorActive: false
+
+  // The picker needs a list to pick from; without one the right-click keeps
+  // its original meaning as a plain toggle.
+  readonly property bool quickAvailable: caps.canList && vpn.profiles.length > 0
+
   // BarIconButton and WidgetButton come from qs.Ui and decide their own
   // textFormat, so the profile name and the tunnel address are stripped here
   // rather than trusted there.
   readonly property string barTooltip: {
+    // With several tunnels up the state label alone hides most of the story,
+    // so each connection gets its own summary line.
+    if (vpn.activeConnections.length > 1) {
+      var lines = [vpn.activeConnections.length + " VPNs connected"]
+      for (var i = 0; i < vpn.activeConnections.length; i++)
+        lines.push(Model.connectionSummary(vpn.activeConnections[i]))
+      if (root.quickAvailable) lines.push("right-click to pick a VPN")
+      return lines.join("\n")
+    }
     var base = root.caps.label + (vpn.profile ? " " + Model.plain(vpn.profile) : "") + " " + vpn.stateLabel
     if (vpn.connected) return base + " · " + Model.plain(vpn.address)
+    if (root.quickAvailable) return base + " · right-click to pick a VPN"
     if (vpn.failed) return base + " · right-click to retry"
     return base + " · right-click to connect"
   }
@@ -90,9 +110,28 @@ Panel {
   }
 
   function handlePress(mouseButton) {
-    if (mouseButton === Qt.RightButton) vpn.toggle()
+    if (mouseButton === Qt.RightButton) {
+      if (root.quickAvailable) root.quickOpen ? quickOwner.close() : root.openQuick()
+      else vpn.toggle()
+    }
     else if (mouseButton === Qt.MiddleButton) { vpn.refresh(); vpn.refreshProfiles() }
     else root.toggle()
+  }
+
+  function openQuick() {
+    // Fresh states before the list shows: a tunnel dropped since the last
+    // poll must not show as still up while the user is choosing.
+    vpn.refresh()
+    vpn.refreshProfiles()
+    quickIndex = 0
+    quickCursorActive = false
+    quickOpen = true
+  }
+
+  function moveQuickCursor(dy) {
+    quickCursorActive = true
+    if (vpn.profiles.length === 0) return
+    quickIndex = Math.max(0, Math.min(vpn.profiles.length - 1, quickIndex + dy))
   }
 
   function closeForms() {
@@ -124,7 +163,10 @@ Panel {
   Service {
     id: vpn
     settings: root.settings
-    detailed: root.opened
+    // The quick picker shows live state too, so it keeps the fast cadence
+    // just like the full panel — otherwise its rows freeze at whatever the
+    // last idle poll saw.
+    detailed: root.opened || root.quickOpen
     bar: root.bar
   }
 
@@ -1110,6 +1152,81 @@ Panel {
     }
   }
 
+  // ── Quick picker ───────────────────────────────────────────────────────────
+  // The right-click popup: every profile with its switch and nothing else, for
+  // connecting or disconnecting without opening the full panel. A second popup
+  // on the same bar slot, so it carries its own handle in the bar's popout
+  // coordination — root's handle belongs to the panel above, and reusing it
+  // would make dismissing the picker close the panel instead.
+  QtObject {
+    id: quickOwner
+    property bool popoutSwitchClosing: false
+    function close() { root.quickOpen = false }
+    function closeForPopoutSwitch() {
+      popoutSwitchClosing = true
+      root.quickOpen = false
+      Qt.callLater(function() { popoutSwitchClosing = false })
+    }
+  }
+
+  KeyboardPanel {
+    id: quickPanel
+    anchorItem: face
+    owner: quickOwner
+    bar: root.bar
+    open: root.quickOpen
+    focusTarget: quickKeys
+    contentWidth: quickPanel.fittedContentWidth(Style.space(300))
+    contentHeight: quickPanel.fittedContentHeight(quickColumn.implicitHeight, Style.space(420))
+
+    PanelKeyCatcher {
+      id: quickKeys
+      anchors.fill: parent
+      onMoveRequested: function(dx, dy) {
+        if (!root.quickCursorActive) { root.quickCursorActive = true; return }
+        if (dy !== 0) root.moveQuickCursor(dy)
+      }
+      onActivateRequested: {
+        if (!root.quickCursorActive || vpn.profiles.length === 0) return
+        var p = vpn.profiles[root.quickIndex]
+        if (p) vpn.activate(p)
+      }
+      onCloseRequested: quickOwner.close()
+
+      Flickable {
+        id: quickFlick
+        anchors.fill: parent
+        contentWidth: width
+        contentHeight: quickColumn.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+        Column {
+          id: quickColumn
+          width: quickFlick.width
+          spacing: Style.space(4)
+
+          PanelSectionHeader {
+            text: "QUICK CONNECT"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          Repeater {
+            model: root.quickOpen ? vpn.profiles : []
+
+            QuickRow {
+              width: quickColumn.width
+            }
+          }
+        }
+      }
+    }
+  }
+
   // ── Building blocks ────────────────────────────────────────────────────────
 
   component InfoPair: Row {
@@ -1299,6 +1416,93 @@ Panel {
           if (!row.profile.hasAuth) bits.push("no credentials")
           return bits.join("  ·  ")
         }
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+      }
+    }
+  }
+
+  // One quick-picker row: state shield, name, switch. Management stays in the
+  // main panel; this row only connects and disconnects.
+  component QuickRow: Rectangle {
+    id: quickRow
+
+    required property var modelData
+    required property int index
+
+    readonly property var profile: modelData
+    readonly property bool isActive: profile && profile.state === "active"
+    readonly property bool rowBusy: vpn.intent !== "" && profile && vpn.lastAttemptName === profile.name
+    readonly property bool hasCursor: root.quickCursorActive && root.quickIndex === index
+
+    implicitHeight: Style.spacing.popupRowHeight + Style.space(4)
+    radius: Style.cornerRadius
+    color: hasCursor ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07) : "transparent"
+
+    function toggleRow() {
+      vpn.activate(Object.assign({}, quickRow.profile,
+                                 { state: quickRow.isActive ? "active" : "inactive" }))
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      onClicked: quickRow.toggleRow()
+      onContainsMouseChanged: if (containsMouse) {
+        root.quickCursorActive = true
+        root.quickIndex = quickRow.index
+      }
+    }
+
+    Text {
+      id: quickIcon
+      textFormat: Text.PlainText
+      anchors.left: parent.left
+      anchors.leftMargin: Style.space(6)
+      anchors.verticalCenter: parent.verticalCenter
+      // Same shield vocabulary as the bar icon, one connection at a time.
+      text: Model.stateIcon({ connected: quickRow.isActive, busy: quickRow.rowBusy, failed: false })
+      color: quickRow.isActive ? root.foreground : root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+    }
+
+    ToggleSwitch {
+      id: quickSwitch
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(4)
+      anchors.verticalCenter: parent.verticalCenter
+      checked: quickRow.isActive
+      busy: quickRow.rowBusy
+      foreground: root.foreground
+      cursorRing: false
+      onToggled: quickRow.toggleRow()
+    }
+
+    Column {
+      anchors.left: quickIcon.right
+      anchors.leftMargin: Style.space(8)
+      anchors.right: quickSwitch.left
+      anchors.rightMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: 0
+
+      Text {
+        textFormat: Text.PlainText
+        width: parent.width
+        text: quickRow.profile ? quickRow.profile.name : ""
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        elide: Text.ElideRight
+      }
+      Text {
+        textFormat: Text.PlainText
+        visible: vpn.unified
+        width: parent.width
+        text: Model.backendBadge(quickRow.profile)
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption

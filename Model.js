@@ -193,6 +193,15 @@ function stateIcon(s) {
   return "󰦜"
 }
 
+// One tooltip line per active connection when several are up at once. The
+// name and address come straight from a probe, so both go through plain().
+function connectionSummary(c) {
+  var line = backend(c.backend).label + (c.name ? " " + plain(c.name) : "")
+  if (c.address) line += " · " + plain(c.address)
+  if (c.hasDefaultRoute) line += " · default route"
+  return line
+}
+
 function stateLabel(unitState, address, intent) {
   if (intent === "up") return "connecting…"
   if (intent === "down") return "disconnecting…"
