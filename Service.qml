@@ -10,7 +10,10 @@ import "Model.js" as Model
 // and the helper at /usr/local/bin/multivpn-admin, and the profile list
 // comes from that helper's cache so merely opening the panel never raises an
 // auth dialog. NetworkManager-owned WireGuard connections skip the helper
-// entirely — nmcli lists them unprivileged and polkit governs the rest.
+// entirely — nmcli lists them unprivileged and polkit governs the rest — and
+// OpenVPN 3 works the same way: the openvpn3 CLI talks to its D-Bus session
+// manager as the user, so listing, importing, connecting and removing all
+// happen without the helper.
 Item {
   id: root
 
@@ -140,9 +143,11 @@ Item {
   // ── Profiles ─────────────────────────────────────────────────────────────
   property var cachedProfiles: []
   property var nmProfiles: []
+  property var ovpn3Profiles: []
   property string profileStates: ""
   readonly property var profiles: {
-    var base = Model.mergeProfiles(cachedProfiles, nmProfiles, profileStates, filterBackend)
+    var base = Model.mergeProfiles(cachedProfiles, nmProfiles.concat(ovpn3Profiles),
+                                   profileStates, filterBackend)
     if (!unified) return base
 
     var out = base.concat(Model.portalProfiles(portals))
@@ -163,9 +168,10 @@ Item {
   function refresh() { if (!statusProc.running) statusProc.running = true }
 
   // Server and cipher only exist in OpenVPN's journal, and only for the
-  // connection currently in focus.
+  // connection currently in focus. OpenVPN 3's session manager reports the
+  // server itself; there is no cipher to fetch.
   function refreshDetails() {
-    if (activeBackend !== "openvpn" || !activeName) return
+    if ((activeBackend !== "openvpn" && activeBackend !== "openvpn3") || !activeName) return
     if (!detailProc.running) detailProc.running = true
   }
 
@@ -177,6 +183,8 @@ Item {
     if (!cacheProc.running) cacheProc.running = true
     if ((filterBackend === "" || filterBackend === "wireguard") && !nmListProc.running)
       nmListProc.running = true
+    if ((filterBackend === "" || filterBackend === "openvpn3") && !ovpn3ListProc.running)
+      ovpn3ListProc.running = true
     if (unified && !portalLoad.running) portalLoad.running = true
     if (!profileStateProc.running) profileStateProc.running = true
   }
@@ -212,6 +220,7 @@ Item {
 
   function connectProfile(p) {
     if (p.backend === "globalprotect") { launchGlobalProtect(p.name); return }
+    if (p.backend === "openvpn3") { connectOvpn3(p.name); return }
     intent = "up"
     actionStatus = ""
     lastError = ""
@@ -250,10 +259,28 @@ Item {
     actionFinished("launch", true, portal ? "opening terminal" : "opening GlobalProtect")
   }
 
+  // openvpn3's session-start is not a plain run-to-completion command: a
+  // web-auth profile prints a URL and returns only after the browser login.
+  // So connecting gets its own runner, which backgrounds the CLI, opens the
+  // URL and polls — the intent/fast-poll machinery shows the progress, this
+  // only reports the outcome.
+  function connectOvpn3(name) {
+    intent = "up"
+    actionStatus = ""
+    lastError = ""
+    lastAttemptName = name
+    ovpn3Connect.command = ["bash", "-lc", Model.ovpn3ConnectScript(name)]
+    ovpn3Connect.running = true
+  }
+
   // One place that knows how each backend is actually switched.
   function commandFor(forBackend, useOrigin, name, direction) {
     if (forBackend === "globalprotect")
       return ["pkexec", "gpclient", "disconnect"]
+
+    // Only disconnect comes through here for openvpn3 — see connectOvpn3.
+    if (forBackend === "openvpn3")
+      return ["openvpn3", "session-manage", "-c", name, "--disconnect"]
 
     if (forBackend === "wireguard" && useOrigin === "nm")
       return ["nmcli", "connection", direction === "down" ? "down" : "up", "id", name]
@@ -272,10 +299,11 @@ Item {
     if (target === "globalprotect") return
     // NetworkManager keeps its own autoconnect flag; no helper involved.
     if (useOrigin === "nm") {
-      nmAutostart.command = ["nmcli", "connection", "modify", name,
-                             "connection.autoconnect", on ? "yes" : "no"]
+      unprivAction.label = "autostart"
+      unprivAction.command = ["nmcli", "connection", "modify", name,
+                              "connection.autoconnect", on ? "yes" : "no"]
       actionStatus = "Setting autostart…"
-      nmAutostart.running = true
+      unprivAction.running = true
       return
     }
     admin(["autostart", target, name, on ? "on" : "off"], "autostart")
@@ -289,6 +317,8 @@ Item {
   // wireguard-tools, which is why the panel offers it first.
   readonly property bool canImportToNm: availability.nmcli === "1"
   readonly property bool canImportToWgQuick: availability.wgquick === "1"
+  // And the unprivileged way in for an .ovpn file.
+  readonly property bool canImportToOvpn3: availability.openvpn3 === "1"
 
   function importToNetworkManager(sourcePath, name) {
     if (!canImportToNm) { lastError = "NetworkManager is not available"; return }
@@ -296,6 +326,14 @@ Item {
     actionStatus = "Importing into NetworkManager…"
     lastError = ""
     nmImport.running = true
+  }
+
+  function importToOpenvpn3(sourcePath, name) {
+    if (!canImportToOvpn3) { lastError = "openvpn3 is not available"; return }
+    ovpn3Import.command = ["bash", "-lc", Model.ovpn3ImportScript(sourcePath, name)]
+    actionStatus = "Importing into OpenVPN 3…"
+    lastError = ""
+    ovpn3Import.running = true
   }
 
   // Which kind of config was picked, so the user never has to say.
@@ -333,9 +371,18 @@ Item {
 
   function removeProfile(name, useOrigin, forBackend) {
     if (useOrigin === "nm") {
-      nmAutostart.command = ["nmcli", "connection", "delete", name]
+      unprivAction.label = "remove"
+      unprivAction.command = ["nmcli", "connection", "delete", name]
       actionStatus = "Removing connection…"
-      nmAutostart.running = true
+      unprivAction.running = true
+      return
+    }
+    // openvpn3 configs are removed the same unprivileged way they came in.
+    if (forBackend === "openvpn3") {
+      unprivAction.label = "remove"
+      unprivAction.command = ["openvpn3", "config-remove", "--config", name, "--force"]
+      actionStatus = "Removing profile…"
+      unprivAction.running = true
       return
     }
     if (forBackend === "globalprotect") { removePortal(name); return }
@@ -462,7 +509,7 @@ Item {
 
   Process {
     id: detailProc
-    command: ["bash", "-lc", Model.detailScript("openvpn", root.activeName)]
+    command: ["bash", "-lc", Model.detailScript(root.activeBackend, root.activeName)]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -504,9 +551,18 @@ Item {
   }
 
   Process {
+    id: ovpn3ListProc
+    command: ["bash", "-lc", Model.ovpn3ListScript()]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.ovpn3Profiles = Model.parseOvpn3Profiles(text)
+    }
+  }
+
+  Process {
     id: profileStateProc
     command: ["bash", "-lc", Model.profileStateScript(
-      root.cachedProfiles.concat(root.nmProfiles).filter(function(p) {
+      root.cachedProfiles.concat(root.nmProfiles).concat(root.ovpn3Profiles).filter(function(p) {
         return root.filterBackend === "" || (p.backend || "openvpn") === root.filterBackend
       }))]
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.profileStates = text }
@@ -602,13 +658,65 @@ Item {
     }
   }
 
+  // Unprivileged write actions that already are their own result — nmcli
+  // autostart and delete, openvpn3 config-remove. The label routes the
+  // finished signal so the panel can close the form that asked.
   Process {
-    id: nmAutostart
+    id: unprivAction
+    property string label: ""
     stderr: StdioCollector { waitForEnd: true }
     onExited: function(code) {
       root.actionStatus = ""
-      if (code === 0) { root.lastError = ""; root.refreshProfiles() }
-      else root.lastError = Model.clamp(stderr.text, Model.MAX_FIELD).trim() || "nmcli failed"
+      if (code === 0) {
+        root.lastError = ""
+        root.refreshProfiles()
+        root.actionFinished(label, true, "done")
+      } else {
+        root.lastError = Model.clamp(stderr.text, Model.MAX_FIELD).trim() || "Action failed"
+        root.actionFinished(label, false, root.lastError)
+      }
+    }
+  }
+
+  // See connectOvpn3. Exit 0 is "sessions-list reports connected"; anything
+  // else carries the captured session-start output as the reason — the
+  // journal probe below is OpenVPN 2's and stays out of this path. On
+  // timeout the session is left standing, so a browser login finished late
+  // still connects and the status probe picks it up.
+  Process {
+    id: ovpn3Connect
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(code) {
+      root.intent = ""
+      root.refresh()
+      if (code === 0) {
+        root.actionStatus = ""
+        root.lastError = ""
+        root.refreshDetails()
+        root.actionFinished("unit", true, "connected")
+      } else {
+        root.lastAttemptFailed = true
+        var why = Model.clamp(stderr.text, Model.MAX_FIELD).trim()
+        root.lastError = "Connection failed" + (why ? ": " + why : "")
+        root.actionFinished("unit", false, "connection failed")
+      }
+    }
+  }
+
+  Process {
+    id: ovpn3Import
+    stderr: StdioCollector { waitForEnd: true }
+    onExited: function(code) {
+      root.actionStatus = ""
+      if (code === 0) {
+        root.lastError = ""
+        root.refreshProfiles()
+        root.refresh()
+        root.actionFinished("import", true, "imported into OpenVPN 3")
+      } else {
+        root.lastError = Model.clamp(stderr.text, Model.MAX_FIELD).trim() || "OpenVPN 3 import failed"
+        root.actionFinished("import", false, root.lastError)
+      }
     }
   }
 

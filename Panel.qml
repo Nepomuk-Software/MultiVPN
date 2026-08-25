@@ -148,9 +148,15 @@ Panel {
         vpn.detectConfigKind(message)
       } else if (command === "detect" && ok) {
         root.importKind = message
-        root.importTarget = message !== "wireguard" ? ""
-                            : vpn.canImportToNm ? "nm"
-                            : vpn.canImportToWgQuick ? "wg-quick" : ""
+        // The unprivileged destination wins as the preselection in both cases;
+        // the buttons below let the user overrule it.
+        root.importTarget = message === "wireguard"
+                            ? (vpn.canImportToNm ? "nm"
+                               : vpn.canImportToWgQuick ? "wg-quick" : "")
+                            : message === "openvpn"
+                              ? (vpn.canImportToOvpn3 ? "openvpn3"
+                                 : vpn.helperInstalled ? "system" : "")
+                              : ""
       } else if (command === "import" && ok) {
         root.closeForms()
       } else if (command === "credentials" && ok) {
@@ -281,8 +287,12 @@ Panel {
         else if (key === "r") { vpn.refresh(); vpn.refreshDetails(); vpn.refreshProfiles() }
         else if (key === "n" && root.caps.canImport) {
           root.closeForms()
-          if (vpn.helperInstalled) { root.importOpen = true; vpn.pickConfigFile() }
-          else root.setupOpen = true
+          // Importing needs the helper only for the root-owned destinations;
+          // NetworkManager and openvpn3 work without it.
+          if (vpn.helperInstalled || vpn.canImportToNm || vpn.canImportToOvpn3) {
+            root.importOpen = true
+            vpn.pickConfigFile()
+          } else root.setupOpen = true
         }
       }
 
@@ -399,7 +409,8 @@ Panel {
                 if (root.currentProfile && root.currentProfile.remote)
                   return root.currentProfile.remote
                          + (root.currentProfile.port ? ":" + root.currentProfile.port : "")
-                if (root.effectiveBackend === "openvpn" && vpn.server) return vpn.server
+                if ((root.effectiveBackend === "openvpn" || root.effectiveBackend === "openvpn3")
+                    && vpn.server) return vpn.server
                 if (root.effectiveBackend === "globalprotect") return vpn.profile || "—"
                 return "—"
               }
@@ -579,7 +590,10 @@ Panel {
             }
 
             Column {
+              // Pinned to openvpn3 there is nothing root-owned to list, so the
+              // setup pitch would be asking for privileges it will not use.
               visible: root.caps.canList && !vpn.helperInstalled
+                       && vpn.backendName !== "openvpn3"
               width: parent.width
               spacing: Style.space(6)
 
@@ -605,13 +619,16 @@ Panel {
 
             Text {
               textFormat: Text.PlainText
-              visible: root.caps.canList && vpn.helperInstalled && vpn.profiles.length === 0
+              visible: root.caps.canList && vpn.profiles.length === 0
+                       && (vpn.helperInstalled || vpn.backendName === "openvpn3")
               width: parent.width
               text: vpn.unified
                     ? "Nothing found. Add an OpenVPN or WireGuard config below, or a GlobalProtect portal."
                     : vpn.backendName === "wireguard"
                       ? "No interfaces in /etc/wireguard and none in NetworkManager."
-                      : "No profiles in /etc/openvpn/client."
+                      : vpn.backendName === "openvpn3"
+                        ? "No configs imported into OpenVPN 3."
+                        : "No profiles in /etc/openvpn/client."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -668,7 +685,10 @@ Panel {
               fontFamily: root.fontFamily
               onClicked: {
                 root.closeForms()
-                if (!vpn.helperInstalled) { root.setupOpen = true; return }
+                if (!vpn.helperInstalled && !vpn.canImportToNm && !vpn.canImportToOvpn3) {
+                  root.setupOpen = true
+                  return
+                }
                 root.importOpen = true
                 vpn.pickConfigFile()
               }
@@ -804,6 +824,49 @@ Panel {
               }
             }
 
+            // An .ovpn file can likewise go two ways: into openvpn3's user
+            // session manager, or into /etc/openvpn/client for the systemd
+            // units. Only shown once openvpn3 makes it an actual choice.
+            Column {
+              visible: root.importKind === "openvpn" && vpn.canImportToOvpn3
+              width: parent.width
+              spacing: Style.space(4)
+
+              Text {
+                textFormat: Text.PlainText
+                text: "Install into"
+                color: root.foreground
+                opacity: 0.6
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              Row {
+                spacing: Style.spacing.controlGap
+                Button {
+                  text: "OpenVPN 3"
+                  bordered: true
+                  enabled: vpn.canImportToOvpn3
+                  selected: root.importTarget === "openvpn3"
+                  tooltipText: "Runs as your user over D-Bus — no root helper needed"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: root.importTarget = "openvpn3"
+                }
+                Button {
+                  text: "openvpn-client"
+                  bordered: true
+                  enabled: vpn.helperInstalled
+                  selected: root.importTarget === "system"
+                  tooltipText: vpn.helperInstalled
+                               ? "Installs into /etc/openvpn/client for openvpn-client@"
+                               : "Needs the root helper — run the profile management setup"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: root.importTarget = "system"
+                }
+              }
+            }
+
             TextField {
               width: parent.width
               text: root.importName
@@ -818,15 +881,20 @@ Panel {
                 id: importButton
                 text: "Import"
                 bordered: true
+                // Every kind now carries a destination; the unprivileged ones
+                // stand on their own, the rest need the helper.
                 enabled: /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(root.importName)
                          && root.importKind !== "" && root.importKind !== "unknown"
-                         && (root.importKind !== "wireguard" || root.importTarget !== "")
-                         && (root.importKind === "wireguard" || vpn.helperInstalled)
+                         && root.importTarget !== ""
+                         && (root.importTarget === "nm" || root.importTarget === "openvpn3"
+                             || vpn.helperInstalled)
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onClicked: {
-                  if (root.importKind === "wireguard" && root.importTarget === "nm")
+                  if (root.importTarget === "nm")
                     vpn.importToNetworkManager(root.importPath, root.importName)
+                  else if (root.importTarget === "openvpn3")
+                    vpn.importToOpenvpn3(root.importPath, root.importName)
                   else
                     vpn.importConfig(root.importPath, root.importName, root.importKind)
                 }
@@ -1011,7 +1079,9 @@ Panel {
               width: parent.width
               text: root.removeBackend === "globalprotect"
                     ? "Remove portal “" + root.removeTarget + "” from the list?"
-                    : "Remove profile “" + root.removeTarget + "” and its stored credentials?"
+                    : root.removeBackend === "openvpn3"
+                      ? "Remove profile “" + root.removeTarget + "” from OpenVPN 3?"
+                      : "Remove profile “" + root.removeTarget + "” and its stored credentials?"
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall

@@ -5,7 +5,7 @@
   "version": "1.0.0",
   "author": "Nepomuk Software",
   "license": "MIT",
-  "description": "One bar widget for every VPN on the machine — OpenVPN, WireGuard and GlobalProtect side by side, with throughput, connection details and config import.",
+  "description": "One bar widget for every VPN on the machine — OpenVPN, OpenVPN 3, WireGuard and GlobalProtect side by side, with throughput, connection details and config import.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "MultiVPN",
-    "description": "Toggle the tunnel, watch throughput and connection details, import and manage profiles. Supports OpenVPN, WireGuard and GlobalProtect.",
+    "description": "Toggle the tunnel, watch throughput and connection details, import and manage profiles. Supports OpenVPN, OpenVPN 3, WireGuard and GlobalProtect.",
     "category": "Network",
     "allowMultiple": true,
     "defaultSection": "right",
@@ -35,6 +35,7 @@
         "options": [
           "unified",
           "openvpn",
+          "openvpn3",
           "wireguard",
           "globalprotect"
         ],

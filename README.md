@@ -1,9 +1,10 @@
 # MultiVPN for Omarchy
 
 One bar widget for every VPN on the machine. **Unified mode** — the default —
-lists OpenVPN profiles, WireGuard interfaces and GlobalProtect portals in a
-single panel, follows whichever one is connected, and switches between them
-with a click. Buttons add a config or a portal without leaving the panel.
+lists OpenVPN profiles, OpenVPN 3 configs, WireGuard interfaces and
+GlobalProtect portals in a single panel, follows whichever one is connected,
+and switches between them with a click. Buttons add a config or a portal
+without leaving the panel.
 
 You can also pin an instance to a single backend if you prefer one icon per
 VPN; `allowMultiple` is on.
@@ -11,6 +12,7 @@ VPN; `allowMultiple` is on.
 | Backend | Connect / disconnect | Profile list | Autostart | Import | Credentials |
 |---|---|---|---|---|---|
 | **OpenVPN** (`openvpn-client@`) | yes | `/etc/openvpn/client` | yes | yes | yes |
+| **OpenVPN 3** (`openvpn3` D-Bus session manager) | yes | `openvpn3 configs-list` | no | yes | asked at session start — SSO opens the browser |
 | **WireGuard** (`wg-quick@` and NetworkManager) | yes | `/etc/wireguard` + `nmcli` | yes | yes | n/a — keys live in the config |
 | **GlobalProtect** (`gpclient`) | disconnect yes, connect hands off | no | no | no | n/a — SSO |
 
@@ -22,6 +24,17 @@ which one the detail and throughput block describes.
 
 The one real conflict is the default route, and only full-tunnel configs claim
 it. If two connections do, the panel says so rather than trying to prevent it.
+
+OpenVPN 3 is the other OpenVPN stack and deliberately a separate backend — the
+two coexist on one machine and the panel decides capabilities per row. It is a
+per-user D-Bus session manager driven by the unprivileged `openvpn3` CLI, so
+listing, importing, connecting and removing configs never touch the root helper
+or its cache; polkit governs the D-Bus services instead. A profile with
+web-based auth does not just connect: the widget starts the session, opens the
+auth URL it prints in your browser, and watches until the session reports
+connected. It stops watching after ~120 s but leaves the session standing, so
+finishing the login late still connects. Autostart is off for now —
+`openvpn3-session@` units want root-owned persistent configs.
 
 GlobalProtect is deliberately the thin one. `gpclient` has no status command,
 no systemd unit and an interactive SSO login, so the widget watches it, can take
@@ -54,14 +67,16 @@ same for all three.
   out whether it is OpenVPN or WireGuard, suggests a name, and installs it.
   WireGuard configs can go into NetworkManager, which needs neither the root
   helper nor `wireguard-tools`, or into `/etc/wireguard` for `wg-quick`.
-  GlobalProtect portals are added by host name instead, since they are not
-  files.
+  An `.ovpn` file likewise offers a choice once both are possible: into
+  OpenVPN 3's session manager (no root helper) or into `/etc/openvpn/client`
+  for `openvpn-client@`. GlobalProtect portals are added by host name instead,
+  since they are not files.
 
 ## Requirements
 
 | Needs | Why |
 |---|---|
-| one of: `openvpn`, `wireguard-tools` (for `wg-quick@`), NetworkManager ≥ 1.16 (for WireGuard connections), `globalprotect-openconnect` | whichever backend you use |
+| one of: `openvpn`, `openvpn3` (openvpn3-linux), `wireguard-tools` (for `wg-quick@`), NetworkManager ≥ 1.16 (for WireGuard connections), `globalprotect-openconnect` | whichever backend you use |
 | `bash`, `systemctl`, `ip`, `journalctl`, `cat` | reading status, addresses, routes and the connection log |
 | membership in a group that can read the system journal (usually `wheel`) | server endpoint and cipher come from the journal |
 | `zenity` | the file dialog for importing a config — optional, the path can also be pasted |
@@ -94,7 +109,8 @@ for it (see below).
 **Profile management is the exception.** `/etc/openvpn/client` is `750
 openvpn:network` and `/etc/wireguard` is root-only, so listing, importing or
 removing those configs needs root. NetworkManager-owned WireGuard connections
-skip all of this — `nmcli` lists them unprivileged and polkit governs the rest. That is
+skip all of this — `nmcli` lists them unprivileged and polkit governs the rest —
+and OpenVPN 3 configs skip it the same way through the `openvpn3` CLI. That is
 what `system/install.sh` sets up, and it is a deliberate, separate, manual step —
 `omarchy plugin add` never runs installers or `sudo`, and this plugin does not
 either. Without it the panel stays fully usable and the profile section says so.
@@ -173,6 +189,7 @@ Either way the connection then appears in the list and switches like any other.
 |---|---|
 | `/var/lib/multivpn/profiles.json` | OpenVPN and `wg-quick` profiles, written by the helper |
 | NetworkManager | WireGuard connections, read live via `nmcli` |
+| openvpn3 configuration manager | OpenVPN 3 configs, read live via `openvpn3 configs-list` |
 | `~/.local/state/multivpn/portals.json` | GlobalProtect portals, owned by you, plain host names |
 
 One known gap: `gpclient` redacts host names in its own log, so when more than
@@ -208,7 +225,7 @@ o.bind("SUPER + ALT + V", "VPN toggle", "omarchy-shell io.github.nepomuk-softwar
 
 | Key | Default | Effect |
 |---|---|---|
-| `backend` | `unified` | `unified` for everything at once, or `openvpn` / `wireguard` / `globalprotect` to pin one |
+| `backend` | `unified` | `unified` for everything at once, or `openvpn` / `openvpn3` / `wireguard` / `globalprotect` to pin one |
 | `profile` | *(empty)* | Pinned modes: which profile the icon controls. Unified mode: the favourite that right-click connects when nothing is up |
 | `intervalSec` | `5` | status interval while idle |
 | `showRate` | `false` | throughput next to the icon in the bar |
