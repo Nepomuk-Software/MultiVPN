@@ -1,10 +1,10 @@
 # MultiVPN für Omarchy
 
 Ein Bar-Widget für alle VPNs der Maschine. Der **Unified-Modus** — die
-Voreinstellung — listet OpenVPN-Profile, WireGuard-Interfaces und
-GlobalProtect-Portale in einem Panel, folgt der jeweils verbundenen Lösung und
-wechselt per Klick. Knöpfe fügen eine Config oder ein Portal hinzu, ohne das
-Panel zu verlassen.
+Voreinstellung — listet OpenVPN-Profile, OpenVPN-3-Configs,
+WireGuard-Interfaces und GlobalProtect-Portale in einem Panel, folgt der
+jeweils verbundenen Lösung und wechselt per Klick. Knöpfe fügen eine Config
+oder ein Portal hinzu, ohne das Panel zu verlassen.
 
 Wer lieber ein Icon pro VPN will, kann eine Instanz auf ein Backend festnageln;
 `allowMultiple` ist an.
@@ -12,6 +12,7 @@ Wer lieber ein Icon pro VPN will, kann eine Instanz auf ein Backend festnageln;
 | Backend | Schalten | Profilliste | Autostart | Import | Zugangsdaten |
 |---|---|---|---|---|---|
 | **OpenVPN** (`openvpn-client@`) | ja | `/etc/openvpn/client` | ja | ja | ja |
+| **OpenVPN 3** (`openvpn3`-D-Bus-Sitzungsmanager) | ja | `openvpn3 configs-list` | nein | ja | beim Sitzungsstart — SSO öffnet den Browser |
 | **WireGuard** (`wg-quick@` und NetworkManager) | ja | `/etc/wireguard` + `nmcli` | ja | ja | entfällt — Schlüssel stehen in der Config |
 | **GlobalProtect** (`gpclient`) | Trennen ja, Verbinden wird übergeben | nein | nein | nein | entfällt — SSO |
 
@@ -25,6 +26,18 @@ Durchsatzblock beschreibt.
 Der einzige echte Konflikt ist die Default-Route, und die beanspruchen nur
 Full-Tunnel-Configs. Tun das zwei gleichzeitig, sagt das Panel es — statt es zu
 verhindern.
+
+OpenVPN 3 ist der andere OpenVPN-Stack und mit Absicht ein eigenes Backend —
+beide koexistieren auf einer Maschine, und das Panel entscheidet Fähigkeiten
+pro Zeile. Es ist ein D-Bus-Sitzungsmanager pro Benutzer, gesteuert über das
+unprivilegierte `openvpn3`-CLI: Auflisten, Importieren, Verbinden und
+Entfernen laufen also nie über den Root-Helfer oder dessen Cache — Polkit
+regelt die D-Bus-Dienste. Ein Profil mit Web-Login verbindet nicht einfach:
+das Widget startet die Sitzung, öffnet die ausgegebene Auth-URL im Browser
+und wartet, bis die Sitzung sich als verbunden meldet. Nach ~120 s hört es
+auf zu warten, lässt die Sitzung aber stehen — ein spät abgeschlossener
+Login verbindet also trotzdem. Autostart bleibt vorerst aus:
+`openvpn3-session@`-Units wollen root-eigene persistente Configs.
 
 GlobalProtect ist bewusst der dünne Fall: `gpclient` hat keinen Status-Befehl,
 keine systemd-Unit und einen interaktiven SSO-Login. Das Widget schaut also zu,
@@ -55,13 +68,15 @@ Durchsatz — funktioniert für alle drei gleich.
   schaltet jede auf ihrem eigenen Weg.
 - **Import** — Datei über den Dialog wählen oder Pfad einfügen; das Widget
   erkennt selbst, ob OpenVPN oder WireGuard, schlägt einen Namen vor und
-  installiert. GlobalProtect-Portale kommen stattdessen als Hostname dazu, sie
-  sind ja keine Dateien.
+  installiert. Eine `.ovpn`-Datei bietet, sobald beides möglich ist, die Wahl:
+  in den OpenVPN-3-Sitzungsmanager (ohne Root-Helfer) oder nach
+  `/etc/openvpn/client` für `openvpn-client@`. GlobalProtect-Portale kommen
+  stattdessen als Hostname dazu, sie sind ja keine Dateien.
 
 ## Voraussetzungen
 
-Je nach Backend `openvpn`, `wireguard-tools` (für `wg-quick@`),
-NetworkManager ab 1.16 (für WireGuard-Verbindungen) oder
+Je nach Backend `openvpn`, `openvpn3` (openvpn3-linux), `wireguard-tools`
+(für `wg-quick@`), NetworkManager ab 1.16 (für WireGuard-Verbindungen) oder
 `globalprotect-openconnect`. Dazu `bash`, `systemctl`, `ip`, `journalctl`. Für den Dateidialog `zenity`, für die Profilverwaltung zusätzlich
 `pkexec` und `python3`. Server und Cipher kommen aus dem Journal — ohne
 Leserechte darauf steht dort schlicht `—`.
@@ -82,7 +97,8 @@ kommen aus unprivilegierten Abfragen. Schalten geht über `systemctl start/stop`
 `750 openvpn:network`, `/etc/wireguard` gehört root allein — Auflisten,
 Importieren und Entfernen brauchen dort also root. WireGuard-Verbindungen, die
 NetworkManager gehören, umgehen das komplett: `nmcli` listet sie ohne Rechte,
-den Rest regelt Polkit.
+den Rest regelt Polkit. OpenVPN-3-Configs umgehen es auf demselben Weg über
+das `openvpn3`-CLI.
 Genau das richtet `system/install.sh` ein — als bewusst getrennter, manueller
 Schritt. `omarchy plugin add` führt weder Installer noch `sudo` aus, und dieses
 Plugin tut es auch nicht. Ohne den Helfer bleibt das Panel voll nutzbar, der
@@ -151,7 +167,7 @@ o.bind("SUPER + ALT + V", "VPN toggle", "omarchy-shell io.github.nepomuk-softwar
 ## Einstellungen
 
 `omarchy bar set io.github.nepomuk-software.multivpn <key> <value>` —
-`backend` (`unified`, `openvpn`, `wireguard`, `globalprotect`), `profile`,
+`backend` (`unified`, `openvpn`, `openvpn3`, `wireguard`, `globalprotect`), `profile`,
 `intervalSec`, `showRate`, `highlightWhenConnected`, `hideWhenDisconnected`.
 Unified braucht keine Einstellung; `profile` ist dort nur der Favorit für den
 Rechtsklick.

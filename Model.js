@@ -92,6 +92,18 @@ var BACKENDS = {
     connectNeedsTerminal: false,
     hasCipher: true
   },
+  openvpn3: {
+    label: "OpenVPN 3",
+    profileLabel: "Profile",
+    canConnect: true,
+    canDisconnect: true,
+    canList: true,
+    canAutostart: false,     // openvpn3-session@ wants root-owned configs — out of scope
+    canCredentials: false,   // user-pass and SSO profiles authenticate at session start
+    canImport: true,
+    connectNeedsTerminal: false,
+    hasCipher: false         // sessions-list reports state and counters, not the cipher
+  },
   wireguard: {
     label: "WireGuard",
     profileLabel: "Interface",
@@ -123,7 +135,7 @@ function backend(name) {
 }
 
 function backendNames() {
-  return ["unified", "openvpn", "wireguard", "globalprotect"]
+  return ["unified", "openvpn", "openvpn3", "wireguard", "globalprotect"]
 }
 
 // In unified mode every row can come from a different backend, so controls are
@@ -170,6 +182,24 @@ function duration(seconds) {
   if (h > 0) return h + "h " + m + "m"
   if (m > 0) return m + "m " + (s % 60) + "s"
   return s + "s"
+}
+
+// Same shield glyphs as the omarchy-openvpn-vpn-toggle waybar module, so the
+// bar reads the same whichever of the two is showing the tunnel.
+function stateIcon(s) {
+  if (s.connected) return "󰦝"
+  if (s.busy) return "󱆣"
+  if (s.failed) return "󰫝"
+  return "󰦜"
+}
+
+// One tooltip line per active connection when several are up at once. The
+// name and address come straight from a probe, so both go through plain().
+function connectionSummary(c) {
+  var line = backend(c.backend).label + (c.name ? " " + plain(c.name) : "")
+  if (c.address) line += " · " + plain(c.address)
+  if (c.hasDefaultRoute) line += " · default route"
+  return line
 }
 
 function stateLabel(unitState, address, intent) {
@@ -279,6 +309,42 @@ function unifiedStatusScript() {
     '  done < <(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | sed -n "s/:wireguard$//p");',
     'fi;',
 
+    // OpenVPN 3 sessions live in a D-Bus manager, not systemd. sessions-list is
+    // the only enumeration, and whether it names the tun device depends on the
+    // version — hence the busctl fallback against the session object, and the
+    // unclaimed-device fallback after that. A session whose config name falls
+    // outside the widget's character policy, or whose fields would break the
+    // pipe-separated hand-off, is dropped in awk before it reaches the pipe —
+    // salvaging a prefix of a hostile name is worse than not listing it.
+    'if command -v openvpn3 >/dev/null 2>&1; then',
+    '  while IFS="|" read -r sp n d st cr; do',
+    '    [ -z "$n" ] && continue;',
+    '    case "$n" in *[!A-Za-z0-9._:@/-]*) continue;; esac;',
+    '    case "$st" in *isconnected*) continue;; esac;',
+    '    if [ -z "$d" ] || [ ! -e /sys/class/net/"$d" ]; then',
+    '      d=$(busctl get-property net.openvpn.v3.sessions "$sp" net.openvpn.v3.sessions device_name 2>/dev/null |',
+    '          sed -n "s/^s \\"\\(.*\\)\\"$/\\1/p");',
+    '    fi;',
+    '    if [ -z "$d" ] || [ ! -e /sys/class/net/"$d" ]; then',
+    '      d="";',
+    '      for cand in $({ ip -brief link show type ovpn; ip -brief link show type tun; } 2>/dev/null |',
+    '                    awk \'{ sub(/@.*/, "", $1); print $1 }\'); do',
+    '        case "$claimed" in *" $cand "*) ;; *) d="$cand"; break;; esac;',
+    '      done;',
+    '    fi;',
+    '    s="";',
+    '    [ -n "$cr" ] && s=$(date -d "$cr" +%s 2>/dev/null);',
+    '    emit openvpn3 dbus "$n" "$d" "$s" "";',
+    '  done < <(openvpn3 sessions-list 2>/dev/null | awk \'',
+    '    function flush() { if (sp != "" && n != "" && n !~ "[^A-Za-z0-9._:@/-]" && index(sp d st cr, "|") == 0) printf "%s|%s|%s|%s|%s\\n", sp, n, d, st, cr; sp = n = d = st = cr = "" }',
+    '    index($0, "/net/openvpn/v3/sessions/") { flush(); v = substr($0, index($0, "/net/openvpn/v3/sessions/")); sub(/[[:space:]].*$/, "", v); sp = v }',
+    '    /Device:/ { v = $0; sub(/.*Device:[[:space:]]*/, "", v); sub(/[[:space:]]*$/, "", v); d = v }',
+    '    /Created:/ { v = $0; sub(/.*Created:[[:space:]]*/, "", v); sub(/[[:space:]]*PID:.*$/, "", v); sub(/[[:space:]]*$/, "", v); cr = v }',
+    '    /Config name:/ { v = $0; sub(/.*Config name:[[:space:]]*/, "", v); sub(/[[:space:]].*$/, "", v); n = v }',
+    '    /Status:/ { v = $0; sub(/.*Status:[[:space:]]*/, "", v); st = v }',
+    '    END { flush() }\');',
+    'fi;',
+
     // GlobalProtect owns no unit and no name, so it gets whatever tunnel device
     // nothing else has claimed.
     'pid=$(pgrep -x gpclient 2>/dev/null | head -1);',
@@ -330,6 +396,7 @@ function availabilityScript() {
   return capped([
     'have() { command -v "$1" >/dev/null 2>&1 && echo 1 || echo 0; };',
     'printf "openvpn=%s\\n" "$(have openvpn)";',
+    'printf "openvpn3=%s\\n" "$(have openvpn3)";',
     'printf "wgquick=%s\\n" "$(have wg-quick)";',
     'printf "nmcli=%s\\n" "$(have nmcli)";',
     'printf "globalprotect=%s\\n" "$(have gpclient)";',
@@ -341,6 +408,7 @@ function availabilityScript() {
 function availabilityLabel(av) {
   var found = []
   if (av.openvpn === "1") found.push("OpenVPN")
+  if (av.openvpn3 === "1") found.push("OpenVPN 3")
   if (av.wgquick === "1" || av.nmcli === "1") found.push("WireGuard")
   if (av.globalprotect === "1") found.push("GlobalProtect")
   if (found.length === 0) return "no VPN tooling found"
@@ -354,8 +422,17 @@ function statusScript() {
 }
 
 // Server endpoint and cipher only exist in OpenVPN's journal. Runs rarely —
-// when the panel opens and when a new connection comes up.
+// when the panel opens and when a new connection comes up. OpenVPN 3 has no
+// journal to read; its session manager reports the server name itself.
 function detailScript(backendName, profile) {
+  if (backendName === "openvpn3") {
+    var qn = shellQuote(profile)
+    return capped([
+      'printf "server=%s\\n" "$(openvpn3 sessions-list 2>/dev/null | awk -v cfg=' + qn + ' \'',
+      '  /Config name:/ { v = $0; sub(/.*Config name:[[:space:]]*/, "", v); sub(/[[:space:]].*$/, "", v); ib = (v == cfg) ? 1 : 0 }',
+      '  ib && /Session name:/ { v = $0; sub(/.*Session name:[[:space:]]*/, "", v); print v; ib = 0 }\' | head -1)"'
+    ].join(" "))
+  }
   if (backendName !== "openvpn") return 'true'
   var u = shellQuote("openvpn-client@" + profile + ".service")
   return capped([
@@ -375,10 +452,22 @@ function detailScript(backendName, profile) {
 function profileStateScript(entries) {
   if (!entries || entries.length === 0) return "true"
   var lines = []
+  var needSessions = false
   for (var i = 0; i < entries.length; i++) {
     var e = entries[i]
     var n = shellQuote(e.name)
-    if (e.origin === "nm") {
+    if (e.backend === "openvpn3") {
+      // One sessions-list serves every entry; a session only counts as active
+      // once the client reports connected — anything earlier still reads as
+      // inactive here, and the switch's busy state covers the transition.
+      needSessions = true
+      lines.push(
+        'st=$(printf "%s" "$ovpn3_sessions" | awk -v cfg=' + n + ' \'' +
+        ' /Config name:/ { v = $0; sub(/.*Config name:[[:space:]]*/, "", v); sub(/[[:space:]].*$/, "", v); ib = (v == cfg) ? 1 : 0 }' +
+        ' ib && /Status:/ { print; ib = 0 }\' | head -1); ' +
+        'case "$st" in *"Client connected"*) a=active;; *) a=inactive;; esac; ' +
+        'printf "%s=%s:disabled\\n" ' + n + ' "$a"')
+    } else if (e.origin === "nm") {
       lines.push(
         'st=$(nmcli -g GENERAL.STATE connection show ' + n + ' 2>/dev/null || true); ' +
         'a=$(nmcli -g connection.autoconnect connection show ' + n + ' 2>/dev/null || true); ' +
@@ -393,6 +482,8 @@ function profileStateScript(entries) {
         '"$(systemctl is-enabled ' + u + ' 2>/dev/null || true)"')
     }
   }
+  if (needSessions)
+    lines.unshift('ovpn3_sessions=$(openvpn3 sessions-list 2>/dev/null || true)')
   return capped(lines.join("; "))
 }
 
@@ -446,6 +537,114 @@ function parseNmProfiles(raw) {
     })
   }
   return out
+}
+
+// OpenVPN 3 configs live in a D-Bus manager and are listed live and
+// unprivileged, like the NetworkManager connections. In --verbose output the
+// name sits two lines below the object path — a layout that holds across the
+// versions in the field, unlike the column widths. Invalid profiles carry a
+// leading "!!" marker in the name column; the marker is stripped so the
+// profile can still be named, connected (it fails with the real reason) and
+// removed.
+function ovpn3ListScript() {
+  return capped([
+    'command -v openvpn3 >/dev/null 2>&1 || exit 0;',
+    'openvpn3 configs-list --verbose 2>/dev/null | awk \'',
+    'index($0, "/net/openvpn/v3/configuration/") == 1 { p = $1; c = 0; next }',
+    'p != "" { c++; if (c == 2) { n = $0; sub(/^!![[:space:]]*/, "", n); sub(/[[:space:]].*$/, "", n); printf "%s\\t%s\\n", p, n; p = "" } }\''
+  ].join(" "))
+}
+
+function parseOvpn3Profiles(raw) {
+  var out = []
+  var lines = clamp(raw).split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    if (!lines[i]) continue
+    var parts = lines[i].split("\t")
+    var name = String(parts[1] || "")
+    // Names come off the machine and end up in commands; anything outside the
+    // widget's character policy is dropped here rather than quoted around.
+    if (!/^[A-Za-z0-9._:@\/-]+$/.test(name)) continue
+    out.push({
+      backend: "openvpn3",
+      origin: "dbus",
+      name: name,
+      remote: "",
+      port: "",
+      proto: "",
+      hasAuth: true
+    })
+  }
+  return out
+}
+
+// The openvpn3 import runs as the user with polkit governing the D-Bus
+// service — same shape as the NetworkManager import, no helper involved.
+// --persistent keeps the config across restarts of the configuration manager.
+function ovpn3ImportScript(path, name) {
+  var f = shellQuote(path)
+  var n = shellQuote(name)
+  return capped([
+    'out=$(openvpn3 config-import --config ' + f + ' --name ' + n + ' --persistent 2>&1) || {',
+    '  printf "%s" "$out" >&2; exit 1;',
+    '}'
+  ].join(" "))
+}
+
+// session-start does not simply block until the tunnel is up: a web-auth
+// profile prints an auth URL and completes only after the user finishes in a
+// browser. So it runs in the background, its captured output is watched for
+// the first URL (opened once), and sessions-list is polled until connected.
+// On timeout the session is left standing — a login finished late in the
+// browser still completes and the status probe picks it up — only the CLI
+// process is reaped. session-start resolves a name less reliably than a
+// D-Bus path, so the path is looked up first.
+//
+// One failure mode looks like nothing at all: when the client backend cannot
+// start (seen in the field with a broken library dependency), session-start
+// waits forever — its default timeout is infinite — no session ever appears
+// and no output is printed. A healthy session is listed within a couple of
+// seconds even while authenticating, so no session and no URL after 20s
+// means the backend is not coming, and waiting the full window would only
+// bury the diagnosis.
+function ovpn3ConnectScript(name) {
+  var q = shellQuote(name)
+  return capped([
+    'cp=$(openvpn3 configs-list --verbose 2>/dev/null | awk -v cfg=' + q + ' \'',
+    'index($0, "/net/openvpn/v3/configuration/") == 1 { p = $1; c = 0; next }',
+    'p != "" { c++; if (c == 2) { n = $0; sub(/^!![[:space:]]*/, "", n); sub(/[[:space:]].*$/, "", n); if (n == cfg) { print p; exit }; p = "" } }\');',
+    'if [ -z "$cp" ]; then echo "config not found in openvpn3" >&2; exit 1; fi;',
+    't=$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/multivpn-ovpn3.XXXXXX") || exit 1;',
+    'openvpn3 session-start --config-path "$cp" > "$t" 2>&1 &',
+    'pid=$!; rc=""; opened=0; seen=0;',
+    'for i in $(seq 1 60); do',
+    '  sleep 2;',
+    '  st=$(openvpn3 sessions-list 2>/dev/null | awk -v cfg=' + q + ' \'',
+    '    /Config name:/ { v = $0; sub(/.*Config name:[[:space:]]*/, "", v); sub(/[[:space:]].*$/, "", v); ib = (v == cfg) ? 1 : 0 }',
+    '    ib && /Status:/ { print; ib = 0 }\' | head -1);',
+    '  [ -n "$st" ] && seen=1;',
+    '  case "$st" in *"Client connected"*) rm -f "$t"; exit 0;; esac;',
+    '  if [ "$opened" = 0 ]; then',
+    '    u=$(grep -oE "https?://[^[:space:]]+" "$t" 2>/dev/null | head -1);',
+    '    if [ -n "$u" ]; then xdg-open "$u" >/dev/null 2>&1 & opened=1; fi;',
+    '  fi;',
+    '  if [ -z "$rc" ] && ! kill -0 "$pid" 2>/dev/null; then',
+    '    wait "$pid"; rc=$?;',
+    '    if [ "$rc" != 0 ]; then head -c 512 "$t" >&2; rm -f "$t"; exit 1; fi;',
+    '  fi;',
+    '  if [ "$i" -ge 10 ] && [ "$seen" = 0 ] && [ "$opened" = 0 ]; then',
+    '    kill "$pid" 2>/dev/null;',
+    '    head -c 512 "$t" >&2;',
+    '    echo "no session appeared — the openvpn3 client backend is not starting (see journalctl)" >&2;',
+    '    rm -f "$t";',
+    '    exit 1;',
+    '  fi;',
+    'done;',
+    'kill "$pid" 2>/dev/null;',
+    'rm -f "$t";',
+    'echo "timed out after 120s — if a browser login is still open, finishing it will connect" >&2;',
+    'exit 1'
+  ].join(" "))
 }
 
 // GlobalProtect portals have no system-wide registry, so the widget keeps its

@@ -8,7 +8,7 @@ import "Model.js" as Model
 
 // Bar icon plus popup for one openvpn-client@<profile>.service instance.
 //
-//   left = panel · right = tunnel on/off · middle = refresh
+//   left = panel · right = quick connect picker · middle = refresh
 //
 // Everything that reads works without root. Profile management goes through
 // pkexec and the helper in system/. Without that helper the panel stays fully
@@ -49,12 +49,32 @@ Panel {
   property int profileIndex: 0
   property bool cursorActive: false
 
+  // The right-click quick picker. Its cursor is its own — the main panel's
+  // keyboard state must not move when the picker does.
+  property bool quickOpen: false
+  property int quickIndex: 0
+  property bool quickCursorActive: false
+
+  // The picker needs a list to pick from; without one the right-click keeps
+  // its original meaning as a plain toggle.
+  readonly property bool quickAvailable: caps.canList && vpn.profiles.length > 0
+
   // BarIconButton and WidgetButton come from qs.Ui and decide their own
   // textFormat, so the profile name and the tunnel address are stripped here
   // rather than trusted there.
   readonly property string barTooltip: {
+    // With several tunnels up the state label alone hides most of the story,
+    // so each connection gets its own summary line.
+    if (vpn.activeConnections.length > 1) {
+      var lines = [vpn.activeConnections.length + " VPNs connected"]
+      for (var i = 0; i < vpn.activeConnections.length; i++)
+        lines.push(Model.connectionSummary(vpn.activeConnections[i]))
+      if (root.quickAvailable) lines.push("right-click to pick a VPN")
+      return lines.join("\n")
+    }
     var base = root.caps.label + (vpn.profile ? " " + Model.plain(vpn.profile) : "") + " " + vpn.stateLabel
     if (vpn.connected) return base + " · " + Model.plain(vpn.address)
+    if (root.quickAvailable) return base + " · right-click to pick a VPN"
     if (vpn.failed) return base + " · right-click to retry"
     return base + " · right-click to connect"
   }
@@ -90,9 +110,28 @@ Panel {
   }
 
   function handlePress(mouseButton) {
-    if (mouseButton === Qt.RightButton) vpn.toggle()
+    if (mouseButton === Qt.RightButton) {
+      if (root.quickAvailable) root.quickOpen ? quickOwner.close() : root.openQuick()
+      else vpn.toggle()
+    }
     else if (mouseButton === Qt.MiddleButton) { vpn.refresh(); vpn.refreshProfiles() }
     else root.toggle()
+  }
+
+  function openQuick() {
+    // Fresh states before the list shows: a tunnel dropped since the last
+    // poll must not show as still up while the user is choosing.
+    vpn.refresh()
+    vpn.refreshProfiles()
+    quickIndex = 0
+    quickCursorActive = false
+    quickOpen = true
+  }
+
+  function moveQuickCursor(dy) {
+    quickCursorActive = true
+    if (vpn.profiles.length === 0) return
+    quickIndex = Math.max(0, Math.min(vpn.profiles.length - 1, quickIndex + dy))
   }
 
   function closeForms() {
@@ -124,7 +163,10 @@ Panel {
   Service {
     id: vpn
     settings: root.settings
-    detailed: root.opened
+    // The quick picker shows live state too, so it keeps the fast cadence
+    // just like the full panel — otherwise its rows freeze at whatever the
+    // last idle poll saw.
+    detailed: root.opened || root.quickOpen
     bar: root.bar
   }
 
@@ -148,9 +190,15 @@ Panel {
         vpn.detectConfigKind(message)
       } else if (command === "detect" && ok) {
         root.importKind = message
-        root.importTarget = message !== "wireguard" ? ""
-                            : vpn.canImportToNm ? "nm"
-                            : vpn.canImportToWgQuick ? "wg-quick" : ""
+        // The unprivileged destination wins as the preselection in both cases;
+        // the buttons below let the user overrule it.
+        root.importTarget = message === "wireguard"
+                            ? (vpn.canImportToNm ? "nm"
+                               : vpn.canImportToWgQuick ? "wg-quick" : "")
+                            : message === "openvpn"
+                              ? (vpn.canImportToOvpn3 ? "openvpn3"
+                                 : vpn.helperInstalled ? "system" : "")
+                              : ""
       } else if (command === "import" && ok) {
         root.closeForms()
       } else if (command === "credentials" && ok) {
@@ -218,7 +266,7 @@ Panel {
     id: iconFace
     BarIconButton {
       bar: root.bar
-      text: "󰖂"
+      text: Model.stateIcon(vpn)
       active: vpn.connected && root.highlightWhenConnected
       dimmed: !vpn.connected && !vpn.busy
       tooltipText: root.barTooltip
@@ -230,7 +278,7 @@ Panel {
     id: labelFace
     WidgetButton {
       bar: root.bar
-      text: "󰖂  " + (vpn.rxUnavailable ? "" : "↓" + Model.rate(vpn.rxRate) + " ")
+      text: Model.stateIcon(vpn) + "  " + (vpn.rxUnavailable ? "" : "↓" + Model.rate(vpn.rxRate) + " ")
             + "↑" + Model.rate(vpn.txRate)
       active: vpn.connected && root.highlightWhenConnected
       tooltipText: root.barTooltip
@@ -281,8 +329,12 @@ Panel {
         else if (key === "r") { vpn.refresh(); vpn.refreshDetails(); vpn.refreshProfiles() }
         else if (key === "n" && root.caps.canImport) {
           root.closeForms()
-          if (vpn.helperInstalled) { root.importOpen = true; vpn.pickConfigFile() }
-          else root.setupOpen = true
+          // Importing needs the helper only for the root-owned destinations;
+          // NetworkManager and openvpn3 work without it.
+          if (vpn.helperInstalled || vpn.canImportToNm || vpn.canImportToOvpn3) {
+            root.importOpen = true
+            vpn.pickConfigFile()
+          } else root.setupOpen = true
         }
       }
 
@@ -329,7 +381,7 @@ Panel {
               iconComponent: Component {
                 Text {
                   textFormat: Text.PlainText
-                  text: "󰖂"
+                  text: Model.stateIcon(vpn)
                   color: vpn.connected ? root.foreground : root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.display
@@ -399,7 +451,8 @@ Panel {
                 if (root.currentProfile && root.currentProfile.remote)
                   return root.currentProfile.remote
                          + (root.currentProfile.port ? ":" + root.currentProfile.port : "")
-                if (root.effectiveBackend === "openvpn" && vpn.server) return vpn.server
+                if ((root.effectiveBackend === "openvpn" || root.effectiveBackend === "openvpn3")
+                    && vpn.server) return vpn.server
                 if (root.effectiveBackend === "globalprotect") return vpn.profile || "—"
                 return "—"
               }
@@ -579,7 +632,10 @@ Panel {
             }
 
             Column {
+              // Pinned to openvpn3 there is nothing root-owned to list, so the
+              // setup pitch would be asking for privileges it will not use.
               visible: root.caps.canList && !vpn.helperInstalled
+                       && vpn.backendName !== "openvpn3"
               width: parent.width
               spacing: Style.space(6)
 
@@ -605,13 +661,16 @@ Panel {
 
             Text {
               textFormat: Text.PlainText
-              visible: root.caps.canList && vpn.helperInstalled && vpn.profiles.length === 0
+              visible: root.caps.canList && vpn.profiles.length === 0
+                       && (vpn.helperInstalled || vpn.backendName === "openvpn3")
               width: parent.width
               text: vpn.unified
                     ? "Nothing found. Add an OpenVPN or WireGuard config below, or a GlobalProtect portal."
                     : vpn.backendName === "wireguard"
                       ? "No interfaces in /etc/wireguard and none in NetworkManager."
-                      : "No profiles in /etc/openvpn/client."
+                      : vpn.backendName === "openvpn3"
+                        ? "No configs imported into OpenVPN 3."
+                        : "No profiles in /etc/openvpn/client."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -651,7 +710,7 @@ Panel {
             Button {
               visible: root.caps.connectNeedsTerminal && !vpn.connected
               text: vpn.profile ? "Connect in terminal" : "Open GlobalProtect"
-              iconText: "󰖂"
+              iconText: Model.stateIcon(vpn)
               bordered: true
               foreground: root.foreground
               fontFamily: root.fontFamily
@@ -668,7 +727,10 @@ Panel {
               fontFamily: root.fontFamily
               onClicked: {
                 root.closeForms()
-                if (!vpn.helperInstalled) { root.setupOpen = true; return }
+                if (!vpn.helperInstalled && !vpn.canImportToNm && !vpn.canImportToOvpn3) {
+                  root.setupOpen = true
+                  return
+                }
                 root.importOpen = true
                 vpn.pickConfigFile()
               }
@@ -804,6 +866,49 @@ Panel {
               }
             }
 
+            // An .ovpn file can likewise go two ways: into openvpn3's user
+            // session manager, or into /etc/openvpn/client for the systemd
+            // units. Only shown once openvpn3 makes it an actual choice.
+            Column {
+              visible: root.importKind === "openvpn" && vpn.canImportToOvpn3
+              width: parent.width
+              spacing: Style.space(4)
+
+              Text {
+                textFormat: Text.PlainText
+                text: "Install into"
+                color: root.foreground
+                opacity: 0.6
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              Row {
+                spacing: Style.spacing.controlGap
+                Button {
+                  text: "OpenVPN 3"
+                  bordered: true
+                  enabled: vpn.canImportToOvpn3
+                  selected: root.importTarget === "openvpn3"
+                  tooltipText: "Runs as your user over D-Bus — no root helper needed"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: root.importTarget = "openvpn3"
+                }
+                Button {
+                  text: "openvpn-client"
+                  bordered: true
+                  enabled: vpn.helperInstalled
+                  selected: root.importTarget === "system"
+                  tooltipText: vpn.helperInstalled
+                               ? "Installs into /etc/openvpn/client for openvpn-client@"
+                               : "Needs the root helper — run the profile management setup"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: root.importTarget = "system"
+                }
+              }
+            }
+
             TextField {
               width: parent.width
               text: root.importName
@@ -818,15 +923,20 @@ Panel {
                 id: importButton
                 text: "Import"
                 bordered: true
+                // Every kind now carries a destination; the unprivileged ones
+                // stand on their own, the rest need the helper.
                 enabled: /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(root.importName)
                          && root.importKind !== "" && root.importKind !== "unknown"
-                         && (root.importKind !== "wireguard" || root.importTarget !== "")
-                         && (root.importKind === "wireguard" || vpn.helperInstalled)
+                         && root.importTarget !== ""
+                         && (root.importTarget === "nm" || root.importTarget === "openvpn3"
+                             || vpn.helperInstalled)
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onClicked: {
-                  if (root.importKind === "wireguard" && root.importTarget === "nm")
+                  if (root.importTarget === "nm")
                     vpn.importToNetworkManager(root.importPath, root.importName)
+                  else if (root.importTarget === "openvpn3")
+                    vpn.importToOpenvpn3(root.importPath, root.importName)
                   else
                     vpn.importConfig(root.importPath, root.importName, root.importKind)
                 }
@@ -1011,7 +1121,9 @@ Panel {
               width: parent.width
               text: root.removeBackend === "globalprotect"
                     ? "Remove portal “" + root.removeTarget + "” from the list?"
-                    : "Remove profile “" + root.removeTarget + "” and its stored credentials?"
+                    : root.removeBackend === "openvpn3"
+                      ? "Remove profile “" + root.removeTarget + "” from OpenVPN 3?"
+                      : "Remove profile “" + root.removeTarget + "” and its stored credentials?"
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -1033,6 +1145,81 @@ Panel {
                 fontFamily: root.fontFamily
                 onClicked: root.closeForms()
               }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // ── Quick picker ───────────────────────────────────────────────────────────
+  // The right-click popup: every profile with its switch and nothing else, for
+  // connecting or disconnecting without opening the full panel. A second popup
+  // on the same bar slot, so it carries its own handle in the bar's popout
+  // coordination — root's handle belongs to the panel above, and reusing it
+  // would make dismissing the picker close the panel instead.
+  QtObject {
+    id: quickOwner
+    property bool popoutSwitchClosing: false
+    function close() { root.quickOpen = false }
+    function closeForPopoutSwitch() {
+      popoutSwitchClosing = true
+      root.quickOpen = false
+      Qt.callLater(function() { popoutSwitchClosing = false })
+    }
+  }
+
+  KeyboardPanel {
+    id: quickPanel
+    anchorItem: face
+    owner: quickOwner
+    bar: root.bar
+    open: root.quickOpen
+    focusTarget: quickKeys
+    contentWidth: quickPanel.fittedContentWidth(Style.space(300))
+    contentHeight: quickPanel.fittedContentHeight(quickColumn.implicitHeight, Style.space(420))
+
+    PanelKeyCatcher {
+      id: quickKeys
+      anchors.fill: parent
+      onMoveRequested: function(dx, dy) {
+        if (!root.quickCursorActive) { root.quickCursorActive = true; return }
+        if (dy !== 0) root.moveQuickCursor(dy)
+      }
+      onActivateRequested: {
+        if (!root.quickCursorActive || vpn.profiles.length === 0) return
+        var p = vpn.profiles[root.quickIndex]
+        if (p) vpn.activate(p)
+      }
+      onCloseRequested: quickOwner.close()
+
+      Flickable {
+        id: quickFlick
+        anchors.fill: parent
+        contentWidth: width
+        contentHeight: quickColumn.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        flickableDirection: Flickable.VerticalFlick
+        interactive: contentHeight > height
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+        Column {
+          id: quickColumn
+          width: quickFlick.width
+          spacing: Style.space(4)
+
+          PanelSectionHeader {
+            text: "QUICK CONNECT"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+          }
+
+          Repeater {
+            model: root.quickOpen ? vpn.profiles : []
+
+            QuickRow {
+              width: quickColumn.width
             }
           }
         }
@@ -1229,6 +1416,93 @@ Panel {
           if (!row.profile.hasAuth) bits.push("no credentials")
           return bits.join("  ·  ")
         }
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideRight
+      }
+    }
+  }
+
+  // One quick-picker row: state shield, name, switch. Management stays in the
+  // main panel; this row only connects and disconnects.
+  component QuickRow: Rectangle {
+    id: quickRow
+
+    required property var modelData
+    required property int index
+
+    readonly property var profile: modelData
+    readonly property bool isActive: profile && profile.state === "active"
+    readonly property bool rowBusy: vpn.intent !== "" && profile && vpn.lastAttemptName === profile.name
+    readonly property bool hasCursor: root.quickCursorActive && root.quickIndex === index
+
+    implicitHeight: Style.spacing.popupRowHeight + Style.space(4)
+    radius: Style.cornerRadius
+    color: hasCursor ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.07) : "transparent"
+
+    function toggleRow() {
+      vpn.activate(Object.assign({}, quickRow.profile,
+                                 { state: quickRow.isActive ? "active" : "inactive" }))
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      onClicked: quickRow.toggleRow()
+      onContainsMouseChanged: if (containsMouse) {
+        root.quickCursorActive = true
+        root.quickIndex = quickRow.index
+      }
+    }
+
+    Text {
+      id: quickIcon
+      textFormat: Text.PlainText
+      anchors.left: parent.left
+      anchors.leftMargin: Style.space(6)
+      anchors.verticalCenter: parent.verticalCenter
+      // Same shield vocabulary as the bar icon, one connection at a time.
+      text: Model.stateIcon({ connected: quickRow.isActive, busy: quickRow.rowBusy, failed: false })
+      color: quickRow.isActive ? root.foreground : root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.body
+    }
+
+    ToggleSwitch {
+      id: quickSwitch
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(4)
+      anchors.verticalCenter: parent.verticalCenter
+      checked: quickRow.isActive
+      busy: quickRow.rowBusy
+      foreground: root.foreground
+      cursorRing: false
+      onToggled: quickRow.toggleRow()
+    }
+
+    Column {
+      anchors.left: quickIcon.right
+      anchors.leftMargin: Style.space(8)
+      anchors.right: quickSwitch.left
+      anchors.rightMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+      spacing: 0
+
+      Text {
+        textFormat: Text.PlainText
+        width: parent.width
+        text: quickRow.profile ? quickRow.profile.name : ""
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        elide: Text.ElideRight
+      }
+      Text {
+        textFormat: Text.PlainText
+        visible: vpn.unified
+        width: parent.width
+        text: Model.backendBadge(quickRow.profile)
         color: root.dim
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
