@@ -246,17 +246,51 @@ function unifiedStatusScript() {
     '  [ -n "$4" ] && claimed="$claimed$4 ";',
     '};',
 
-    // OpenVPN: several instances can run at once, and each one names its own
-    // interface in its journal — "first tun device" would be a coin flip.
+    // Every tunnel device on the machine. The OpenVPN fallback just below and
+    // GlobalProtect further down want the same list.
+    'tunnels() { { ip -brief link show type ovpn; ip -brief link show type tun; } 2>/dev/null |',
+    '  awk \'{ sub(/@.*/, "", $1); print $1 }\'; };',
+
+    // Which interface one OpenVPN instance opened. Only its journal says, and
+    // it says it two ways: the in-kernel DCO driver logs "net_iface_new: add
+    // ovpn0", the ordinary tun driver logs "TUN/TAP device tun0 opened".
+    // Matching only the first is what made a plain tun connection — the common
+    // case, DCO is opt-in — report no address and read as still coming up.
+    //
+    // Scoped to the unit's current invocation and stopped at the first hit
+    // rather than tailed: the line is printed once when the tunnel comes up, so
+    // a fixed tail window loses it as soon as the connection logs enough to
+    // fill it, which for a long-lived tunnel is a matter of hours.
+    'ovpn_iface() {',
+    '  inv=$(systemctl show "$1" -p InvocationID --value 2>/dev/null);',
+    '  if [ -n "$inv" ]; then',
+    '    journalctl _SYSTEMD_INVOCATION_ID="$inv" --no-pager -o cat 2>/dev/null;',
+    '  else',
+    '    journalctl -u "$1" -n 400 --no-pager -o cat 2>/dev/null;',
+    '  fi |',
+    '  grep -m1 -oE "net_iface_new: add [^ ]+|TUN/TAP device [^ ]+|tun/tap device \\[[^]]+\\]" |',
+    '  awk \'{print $NF}\' | tr -d "[]";',
+    '};',
+
+    // OpenVPN: several instances can run at once, so the journal is what pairs
+    // each one with its own interface.
+    'ovpn_list=$(systemctl list-units "openvpn-client@*.service" --state=active --no-legend --plain 2>/dev/null | awk \'{print $1}\');',
+    'ovpn_n=$(printf "%s\\n" "$ovpn_list" | grep -c .);',
     'while IFS= read -r u; do',
     '  [ -z "$u" ] && continue;',
     '  n=${u#openvpn-client@}; n=${n%.service};',
-    '  i=$(journalctl -u "$u" -n 200 --no-pager -o cat 2>/dev/null |',
-    '      grep -oE "net_iface_new: add [^ ]+" | tail -1 | awk \'{print $3}\');',
+    '  i=$(ovpn_iface "$u");',
+    // Reading the journal is optional on this machine, and without it there is
+    // nothing to pair against. One instance running and one candidate device is
+    // still an unambiguous pairing; two of either and this declines to guess,
+    // which is the whole reason "first tun device" is not the rule here.
+    '  if [ -z "$i" ] && [ "$ovpn_n" = 1 ] && [ "$(tunnels | grep -c .)" = 1 ]; then',
+    '    i=$(tunnels);',
+    '  fi;',
     '  s=$(date -d "$(systemctl show "$u" -p ActiveEnterTimestamp --value 2>/dev/null)" +%s 2>/dev/null);',
     '  e=$(systemctl is-enabled "$u" 2>/dev/null);',
     '  emit openvpn systemd "$n" "$i" "$s" "$e";',
-    'done < <(systemctl list-units "openvpn-client@*.service" --state=active --no-legend --plain 2>/dev/null | awk \'{print $1}\');',
+    'done < <(printf "%s\\n" "$ovpn_list");',
 
     'while IFS= read -r u; do',
     '  [ -z "$u" ] && continue;',
@@ -285,8 +319,7 @@ function unifiedStatusScript() {
     '[ -z "$pid" ] && pid=$(pgrep -x gpservice 2>/dev/null | head -1);',
     'if [ -n "$pid" ]; then',
     '  gi="";',
-    '  for cand in $({ ip -brief link show type ovpn; ip -brief link show type tun; } 2>/dev/null |',
-    '                awk \'{ sub(/@.*/, "", $1); print $1 }\'); do',
+    '  for cand in $(tunnels); do',
     '    case "$claimed" in *" $cand "*) ;; *) gi="$cand"; break;; esac;',
     '  done;',
     '  et=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d "[:space:]");',
@@ -318,7 +351,11 @@ function parseConnections(raw) {
       address: f[6],
       mtu: f[7],
       routes: routes,
-      hasDefaultRoute: routes.indexOf("default") !== -1
+      // redirect-gateway def1 installs no default route: it installs the two
+      // halves that override one. Same claim over the traffic, so it has to
+      // count as the same claim here.
+      hasDefaultRoute: routes.indexOf("default") !== -1 ||
+        (routes.indexOf("0.0.0.0/1") !== -1 && routes.indexOf("128.0.0.0/1") !== -1)
     })
   }
   return out
