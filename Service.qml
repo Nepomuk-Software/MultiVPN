@@ -26,9 +26,15 @@ Item {
     return value === undefined || value === null ? fallback : value
   }
 
+  // Defaults have to match the manifest's, because nothing merges the two: the
+  // bar hands over the settings the user actually set and no more, so an
+  // instance added with no configuration lands here. Falling back to openvpn
+  // pinned an unconfigured widget to one backend and, through the profile
+  // fallback below, to a profile name nobody had — so a perfectly good tunnel
+  // was filtered out of its own status and the panel read disconnected.
   readonly property string backendName: {
-    var raw = String(setting("backend", "openvpn"))
-    return Model.BACKENDS[raw] ? raw : "openvpn"
+    var raw = String(setting("backend", "unified"))
+    return Model.BACKENDS[raw] ? raw : "unified"
   }
   readonly property var caps: Model.backend(backendName)
   readonly property bool unified: backendName === "unified"
@@ -78,7 +84,7 @@ Item {
   // For OpenVPN and WireGuard this is a profile/interface name; for
   // GlobalProtect it is the portal server.
   readonly property string profile: {
-    var raw = String(setting("profile", backendName === "openvpn" ? "work" : ""))
+    var raw = String(setting("profile", ""))
     return /^[A-Za-z0-9._:@\/-]*$/.test(raw) ? raw : ""
   }
   readonly property int intervalSec: Math.max(1, Number(setting("intervalSec", 5)))
