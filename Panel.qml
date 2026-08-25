@@ -224,7 +224,7 @@ Panel {
     id: iconFace
     BarIconButton {
       bar: root.bar
-      text: "󰖂"
+      text: Model.stateIcon(vpn)
       active: vpn.connected && root.highlightWhenConnected
       dimmed: !vpn.connected && !vpn.busy
       tooltipText: root.barTooltip
@@ -236,7 +236,7 @@ Panel {
     id: labelFace
     WidgetButton {
       bar: root.bar
-      text: "󰖂  " + (vpn.rxUnavailable ? "" : "↓" + Model.rate(vpn.rxRate) + " ")
+      text: Model.stateIcon(vpn) + "  " + (vpn.rxUnavailable ? "" : "↓" + Model.rate(vpn.rxRate) + " ")
             + "↑" + Model.rate(vpn.txRate)
       active: vpn.connected && root.highlightWhenConnected
       tooltipText: root.barTooltip
@@ -339,7 +339,7 @@ Panel {
               iconComponent: Component {
                 Text {
                   textFormat: Text.PlainText
-                  text: "󰖂"
+                  text: Model.stateIcon(vpn)
                   color: vpn.connected ? root.foreground : root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.display
@@ -668,7 +668,7 @@ Panel {
             Button {
               visible: root.caps.connectNeedsTerminal && !vpn.connected
               text: vpn.profile ? "Connect in terminal" : "Open GlobalProtect"
-              iconText: "󰖂"
+              iconText: Model.stateIcon(vpn)
               bordered: true
               foreground: root.foreground
               fontFamily: root.fontFamily

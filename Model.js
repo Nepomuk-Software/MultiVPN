@@ -184,6 +184,15 @@ function duration(seconds) {
   return s + "s"
 }
 
+// Same shield glyphs as the omarchy-openvpn-vpn-toggle waybar module, so the
+// bar reads the same whichever of the two is showing the tunnel.
+function stateIcon(s) {
+  if (s.connected) return "󰦝"
+  if (s.busy) return "󱆣"
+  if (s.failed) return "󰫝"
+  return "󰦜"
+}
+
 function stateLabel(unitState, address, intent) {
   if (intent === "up") return "connecting…"
   if (intent === "down") return "disconnecting…"
