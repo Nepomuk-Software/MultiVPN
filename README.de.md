@@ -11,7 +11,7 @@ Wer lieber ein Icon pro VPN will, kann eine Instanz auf ein Backend festnageln;
 
 | Backend | Schalten | Profilliste | Autostart | Import | Zugangsdaten |
 |---|---|---|---|---|---|
-| **OpenVPN** (`openvpn-client@`) | ja | `/etc/openvpn/client` | ja | ja | ja |
+| **OpenVPN** (`openvpn-client@` und NetworkManager) | ja | `/etc/openvpn/client` + `nmcli` | ja | ja | systemd: gespeichert; NM: Prompt beim Verbinden |
 | **OpenVPN 3** (`openvpn3`-D-Bus-Sitzungsmanager) | ja | `openvpn3 configs-list` | nein | ja | beim Sitzungsstart — SSO öffnet den Browser |
 | **WireGuard** (`wg-quick@` und NetworkManager) | ja | `/etc/wireguard` + `nmcli` | ja | ja | entfällt — Schlüssel stehen in der Config |
 | **GlobalProtect** (`gpclient`) | Trennen ja, Verbinden wird übergeben | nein | nein | nein | entfällt — SSO |
@@ -65,18 +65,21 @@ Durchsatz — funktioniert für alle drei gleich.
 - **Profile** — alles, was das Backend kennt, mit Zustand; Klick verbindet oder
   wechselt, dazu Autostart, Zugangsdaten und Entfernen pro Profil. WireGuard
   listet `wg-quick`-Units und NetworkManager-Verbindungen nebeneinander und
-  schaltet jede auf ihrem eigenen Weg.
+  schaltet jede auf ihrem eigenen Weg. OpenVPN ebenso für `openvpn-client@`
+  und NetworkManager-Verbindungen vom Typ `vpn` (service-type openvpn).
 - **Import** — Datei über den Dialog wählen oder Pfad einfügen; das Widget
   erkennt selbst, ob OpenVPN oder WireGuard, schlägt einen Namen vor und
-  installiert. Eine `.ovpn`-Datei bietet, sobald beides möglich ist, die Wahl:
-  in den OpenVPN-3-Sitzungsmanager (ohne Root-Helfer) oder nach
-  `/etc/openvpn/client` für `openvpn-client@`. GlobalProtect-Portale kommen
-  stattdessen als Hostname dazu, sie sind ja keine Dateien.
+  installiert. Eine `.ovpn`-Datei bietet bis zu drei Ziele: NetworkManager
+  (ohne Root-Helfer, und der Weg, der ein Einmalpasswort abfragen kann),
+  den OpenVPN-3-Sitzungsmanager oder `/etc/openvpn/client` für
+  `openvpn-client@`. GlobalProtect-Portale kommen stattdessen als Hostname
+  dazu, sie sind ja keine Dateien.
 
 ## Voraussetzungen
 
 Je nach Backend `openvpn`, `openvpn3` (openvpn3-linux), `wireguard-tools`
-(für `wg-quick@`), NetworkManager ab 1.16 (für WireGuard-Verbindungen) oder
+(für `wg-quick@`), NetworkManager ab 1.16 (für WireGuard-Verbindungen),
+`networkmanager-openvpn` (für OpenVPN-Verbindungen in NetworkManager) oder
 `globalprotect-openconnect`. Dazu `bash`, `systemctl`, `ip`, `journalctl`. Für den Dateidialog `zenity`, für die Profilverwaltung zusätzlich
 `pkexec` und `python3`. Server und Cipher kommen aus dem Journal — ohne
 Leserechte darauf steht dort schlicht `—`.
@@ -95,10 +98,10 @@ kommen aus unprivilegierten Abfragen. Schalten geht über `systemctl start/stop`
 
 **Ausnahme ist die Profilverwaltung.** `/etc/openvpn/client` ist
 `750 openvpn:network`, `/etc/wireguard` gehört root allein — Auflisten,
-Importieren und Entfernen brauchen dort also root. WireGuard-Verbindungen, die
-NetworkManager gehören, umgehen das komplett: `nmcli` listet sie ohne Rechte,
-den Rest regelt Polkit. OpenVPN-3-Configs umgehen es auf demselben Weg über
-das `openvpn3`-CLI.
+Importieren und Entfernen brauchen dort also root. WireGuard- und
+OpenVPN-Verbindungen, die NetworkManager gehören, umgehen das komplett:
+`nmcli` listet sie ohne Rechte, den Rest regelt Polkit. OpenVPN-3-Configs
+umgehen es auf demselben Weg über das `openvpn3`-CLI.
 Genau das richtet `system/install.sh` ein — als bewusst getrennter, manueller
 Schritt. `omarchy plugin add` führt weder Installer noch `sudo` aus, und dieses
 Plugin tut es auch nicht. Ohne den Helfer bleibt das Panel voll nutzbar, der
@@ -141,6 +144,32 @@ WireGuard-Datei erkennt:
 
 Danach taucht die Verbindung in der Liste auf und lässt sich wie jede andere
 schalten.
+
+## OpenVPN-Config installieren
+
+Drei Wege unter **Add config**, sobald eine `.ovpn`-Datei erkannt ist. Die
+unprivilegierten zuerst:
+
+- **NetworkManager** — kein Root-Helfer. Braucht das Paket
+  `networkmanager-openvpn`. Das ist der Weg, der ein Einmalpasswort
+  abfragen kann (`static-challenge` oder eine Challenge vom Server): eine
+  systemd-Unit hat kein TTY, und gespeicherte Zugangsdaten können keinen
+  rotierenden Code halten. Von Hand:
+  `nmcli connection import type openvpn file client.ovpn`
+  Verbinden geht über `nmcli connection up`. Braucht das Profil eine
+  Challenge oder fehlt ein NetworkManager-Secret-Agent — Omarchy bringt
+  keinen mit — öffnet das Widget ein Terminal mit `nmcli --ask`.
+  Autostart ist NetworkManagers eigenes Flag; bei einem Challenge-Profil
+  scheitert es beim Boot, weil niemand das OTP eingeben kann.
+- **OpenVPN 3** — landet im Sitzungsmanager des Benutzers. Kein Root-Helfer.
+  Web-Login öffnet den Browser, wie bisher.
+- **openvpn-client@** — landet in `/etc/openvpn/client`. Braucht den
+  Root-Helfer. Benutzer/Passwort lassen sich speichern, ein OTP nicht.
+
+Ein `tun`, den NetworkManager von allein hochgezogen hat, wird nicht aus
+der Interface-Liste geraten: der Unified-Modus meldet nur Verbindungen,
+die er benennen kann. Steht das Profil als NM-Zeile in der Liste, hängen
+Adresse, Routen, Laufzeit und Durchsatz daran wie bei jeder anderen.
 
 ## Bedienung
 

@@ -41,8 +41,9 @@ Panel {
   property string removeBackend: ""
   property string importKind: ""
   property bool importOpen: false
-  // Where a WireGuard config should land. NetworkManager needs no root helper
-  // and no wireguard-tools, so it wins when both are possible.
+  // Where a detected config should land. Unprivileged destinations win the
+  // preselection: NetworkManager for WireGuard and for OpenVPN, then
+  // OpenVPN 3, then the root-owned systemd paths.
   property string importTarget: ""
   property bool portalFormOpen: false
   property bool setupOpen: false
@@ -196,7 +197,8 @@ Panel {
                             ? (vpn.canImportToNm ? "nm"
                                : vpn.canImportToWgQuick ? "wg-quick" : "")
                             : message === "openvpn"
-                              ? (vpn.canImportToOvpn3 ? "openvpn3"
+                              ? (vpn.canImportToNmOpenvpn ? "nm"
+                                 : vpn.canImportToOvpn3 ? "openvpn3"
                                  : vpn.helperInstalled ? "system" : "")
                               : ""
       } else if (command === "import" && ok) {
@@ -331,7 +333,8 @@ Panel {
           root.closeForms()
           // Importing needs the helper only for the root-owned destinations;
           // NetworkManager and openvpn3 work without it.
-          if (vpn.helperInstalled || vpn.canImportToNm || vpn.canImportToOvpn3) {
+          if (vpn.helperInstalled || vpn.canImportToNm || vpn.canImportToNmOpenvpn
+              || vpn.canImportToOvpn3) {
             root.importOpen = true
             vpn.pickConfigFile()
           } else root.setupOpen = true
@@ -662,7 +665,9 @@ Panel {
             Text {
               textFormat: Text.PlainText
               visible: root.caps.canList && vpn.profiles.length === 0
-                       && (vpn.helperInstalled || vpn.backendName === "openvpn3")
+                       && (vpn.helperInstalled || vpn.backendName === "openvpn3"
+                           || vpn.canImportToNm || vpn.canImportToNmOpenvpn
+                           || vpn.canImportToOvpn3)
               width: parent.width
               text: vpn.unified
                     ? "Nothing found. Add an OpenVPN or WireGuard config below, or a GlobalProtect portal."
@@ -670,7 +675,7 @@ Panel {
                       ? "No interfaces in /etc/wireguard and none in NetworkManager."
                       : vpn.backendName === "openvpn3"
                         ? "No configs imported into OpenVPN 3."
-                        : "No profiles in /etc/openvpn/client."
+                        : "No profiles in /etc/openvpn/client and none in NetworkManager."
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -727,7 +732,8 @@ Panel {
               fontFamily: root.fontFamily
               onClicked: {
                 root.closeForms()
-                if (!vpn.helperInstalled && !vpn.canImportToNm && !vpn.canImportToOvpn3) {
+                if (!vpn.helperInstalled && !vpn.canImportToNm && !vpn.canImportToNmOpenvpn
+                    && !vpn.canImportToOvpn3) {
                   root.setupOpen = true
                   return
                 }
@@ -866,11 +872,14 @@ Panel {
               }
             }
 
-            // An .ovpn file can likewise go two ways: into openvpn3's user
-            // session manager, or into /etc/openvpn/client for the systemd
-            // units. Only shown once openvpn3 makes it an actual choice.
+            // An .ovpn file can go three ways: NetworkManager (2FA / challenge
+            // prompts), openvpn3's user session manager, or /etc/openvpn/client
+            // for the systemd units. Shown whenever there is a destination to
+            // pick; unavailable ones stay visible but disabled.
             Column {
-              visible: root.importKind === "openvpn" && vpn.canImportToOvpn3
+              visible: root.importKind === "openvpn"
+                       && (vpn.canImportToNmOpenvpn || vpn.canImportToOvpn3
+                           || vpn.helperInstalled)
               width: parent.width
               spacing: Style.space(4)
 
@@ -882,14 +891,29 @@ Panel {
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
               }
-              Row {
+              Flow {
+                width: parent.width
                 spacing: Style.spacing.controlGap
+                Button {
+                  text: "NetworkManager"
+                  bordered: true
+                  enabled: vpn.canImportToNmOpenvpn
+                  selected: root.importTarget === "nm"
+                  tooltipText: vpn.canImportToNmOpenvpn
+                               ? "No root helper needed — handles one-time passwords"
+                               : "Needs the networkmanager-openvpn package"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  onClicked: root.importTarget = "nm"
+                }
                 Button {
                   text: "OpenVPN 3"
                   bordered: true
                   enabled: vpn.canImportToOvpn3
                   selected: root.importTarget === "openvpn3"
-                  tooltipText: "Runs as your user over D-Bus — no root helper needed"
+                  tooltipText: vpn.canImportToOvpn3
+                               ? "Runs as your user over D-Bus — no root helper needed"
+                               : "openvpn3 is not installed"
                   foreground: root.foreground
                   fontFamily: root.fontFamily
                   onClicked: root.importTarget = "openvpn3"
@@ -906,6 +930,16 @@ Panel {
                   fontFamily: root.fontFamily
                   onClicked: root.importTarget = "system"
                 }
+              }
+              Text {
+                textFormat: Text.PlainText
+                visible: !vpn.canImportToNmOpenvpn
+                width: parent.width
+                text: "NetworkManager OpenVPN needs the networkmanager-openvpn package."
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
               }
             }
 
@@ -928,13 +962,17 @@ Panel {
                 enabled: /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(root.importName)
                          && root.importKind !== "" && root.importKind !== "unknown"
                          && root.importTarget !== ""
-                         && (root.importTarget === "nm" || root.importTarget === "openvpn3"
+                         && ((root.importTarget === "nm" && root.importKind === "wireguard"
+                              && vpn.canImportToNm)
+                             || (root.importTarget === "nm" && root.importKind === "openvpn"
+                                 && vpn.canImportToNmOpenvpn)
+                             || root.importTarget === "openvpn3"
                              || vpn.helperInstalled)
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onClicked: {
                   if (root.importTarget === "nm")
-                    vpn.importToNetworkManager(root.importPath, root.importName)
+                    vpn.importToNetworkManager(root.importPath, root.importName, root.importKind)
                   else if (root.importTarget === "openvpn3")
                     vpn.importToOpenvpn3(root.importPath, root.importName)
                   else
@@ -1121,6 +1159,8 @@ Panel {
               width: parent.width
               text: root.removeBackend === "globalprotect"
                     ? "Remove portal “" + root.removeTarget + "” from the list?"
+                    : root.removeOrigin === "nm"
+                      ? "Remove NetworkManager connection “" + root.removeTarget + "”?"
                     : root.removeBackend === "openvpn3"
                       ? "Remove profile “" + root.removeTarget + "” from OpenVPN 3?"
                       : "Remove profile “" + root.removeTarget + "” and its stored credentials?"
@@ -1362,8 +1402,9 @@ Panel {
         onClicked: row.autostartToggled()
       }
       PanelActionButton {
-        opacity: row.rowCaps.canCredentials ? 1 : 0
-        enabled: row.rowCaps.canCredentials
+        // NM OpenVPN secrets live in NetworkManager, not the helper.
+        opacity: row.rowCaps.canCredentials && row.profile && row.profile.origin !== "nm" ? 1 : 0
+        enabled: row.rowCaps.canCredentials && row.profile && row.profile.origin !== "nm"
         iconText: "󰌆"
         tooltipText: "Set credentials"
         foreground: row.profile && row.profile.hasAuth ? root.foreground : root.dim

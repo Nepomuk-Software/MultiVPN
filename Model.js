@@ -146,9 +146,9 @@ function capsFor(profileBackend) {
 
 function backendBadge(profile) {
   if (!profile) return ""
-  if (profile.backend === "wireguard")
-    return profile.origin === "nm" ? "WireGuard · NM" : "WireGuard"
-  return backend(profile.backend).label
+  var label = backend(profile.backend).label
+  if (profile.origin === "nm") return label + " · NM"
+  return label
 }
 
 // ── Formatting ─────────────────────────────────────────────────────────────
@@ -330,17 +330,32 @@ function unifiedStatusScript() {
     '  emit wireguard wg-quick "$n" "$n" "$s" "$e";',
     'done < <(systemctl list-units "wg-quick@*.service" --state=active --no-legend --plain 2>/dev/null | awk \'{print $1}\');',
 
+    // NetworkManager: WireGuard is its own type; OpenVPN is type vpn with
+    // service-type ending in openvpn. Listed live, no helper. Emitting here
+    // claims the tun, so GlobalProtect further down does not steal it.
     'if command -v nmcli >/dev/null 2>&1; then',
     '  bs=$(printf "\\134");',
-    '  while IFS= read -r escaped; do',
-    '    [ -z "$escaped" ] && continue;',
+    '  while IFS= read -r line; do',
+    '    [ -z "$line" ] && continue;',
+    '    case "$line" in',
+    '      *:wireguard) t=wireguard; escaped=${line%:wireguard};;',
+    '      *:vpn) t=vpn; escaped=${line%:vpn};;',
+    '      *) continue;;',
+    '    esac;',
     '    n=${escaped//"$bs"/};',
+    '    if [ "$t" = vpn ]; then',
+    '      st=$(nmcli -g vpn.service-type connection show "$n" 2>/dev/null);',
+    '      case "$st" in *openvpn) ;; *) continue;; esac;',
+    '      b=openvpn;',
+    '    else',
+    '      b=wireguard;',
+    '    fi;',
     '    d=$(nmcli -g GENERAL.DEVICES connection show "$n" 2>/dev/null | head -1);',
     '    s=$(nmcli -g connection.timestamp connection show "$n" 2>/dev/null);',
     '    a=$(nmcli -g connection.autoconnect connection show "$n" 2>/dev/null);',
     '    [ "$a" = yes ] && e=enabled || e=disabled;',
-    '    emit wireguard nm "$n" "$d" "$s" "$e";',
-    '  done < <(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null | sed -n "s/:wireguard$//p");',
+    '    emit "$b" nm "$n" "$d" "$s" "$e";',
+    '  done < <(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null);',
     'fi;',
 
     // OpenVPN 3 sessions live in a D-Bus manager, not systemd. sessions-list is
@@ -436,6 +451,11 @@ function availabilityScript() {
     'printf "openvpn3=%s\\n" "$(have openvpn3)";',
     'printf "wgquick=%s\\n" "$(have wg-quick)";',
     'printf "nmcli=%s\\n" "$(have nmcli)";',
+    'plug=0;',
+    'for f in /usr/lib/NetworkManager/VPN/nm-openvpn-service.name /usr/lib64/NetworkManager/VPN/nm-openvpn-service.name; do',
+    '  [ -e "$f" ] && plug=1;',
+    'done;',
+    'printf "nmopenvpn=%s\\n" "$plug";',
     'printf "globalprotect=%s\\n" "$(have gpclient)";',
     'printf "zenity=%s\\n" "$(have zenity)"'
   ].join(" "))
@@ -444,7 +464,7 @@ function availabilityScript() {
 // Human summary for the panel header.
 function availabilityLabel(av) {
   var found = []
-  if (av.openvpn === "1") found.push("OpenVPN")
+  if (av.openvpn === "1" || av.nmopenvpn === "1") found.push("OpenVPN")
   if (av.openvpn3 === "1") found.push("OpenVPN 3")
   if (av.wgquick === "1" || av.nmcli === "1") found.push("WireGuard")
   if (av.globalprotect === "1") found.push("GlobalProtect")
@@ -461,7 +481,10 @@ function statusScript() {
 // Server endpoint and cipher only exist in OpenVPN's journal. Runs rarely —
 // when the panel opens and when a new connection comes up. OpenVPN 3 has no
 // journal to read; its session manager reports the server name itself.
-function detailScript(backendName, profile) {
+function detailScript(backendName, profile, origin) {
+  // NetworkManager OpenVPN has no openvpn-client@ journal; the profile row
+  // already carries remote/port from vpn.data.
+  if (origin === "nm") return "true"
   if (backendName === "openvpn3") {
     var qn = shellQuote(profile)
     return capped([
@@ -524,13 +547,15 @@ function profileStateScript(entries) {
   return capped(lines.join("; "))
 }
 
-// NetworkManager owns its own WireGuard connections, so they are listed live
-// rather than through the privileged cache.
-// nmcli's terse output escapes colons inside values, so connection names are
-// filtered by stripping the trailing ":wireguard" rather than splitting on ":".
-// Peer lines read "endpoint=host:port allowed-ips=..." with the port's colon
-// backslash-escaped and no spaces around the equals sign.
-function nmWireguardListScript() {
+// NetworkManager owns its own WireGuard and OpenVPN connections, so they are
+// listed live rather than through the privileged cache.
+// nmcli's terse NAME,TYPE listing escapes colons inside values; types are
+// recognised by stripping a trailing ":wireguard" / ":vpn" rather than
+// splitting on ":". OpenVPN is type vpn — confirm service-type before keeping
+// it, so OpenConnect and the rest stay out. Peer lines read
+// "endpoint=host:port allowed-ips=..." with the port's colon backslash-escaped
+// and no spaces around the equals sign.
+function nmListScript() {
   return capped([
     'command -v nmcli >/dev/null 2>&1 || exit 0;',
     // A literal backslash through JS, bash and sed is a quoting swamp, so the
@@ -538,15 +563,53 @@ function nmWireguardListScript() {
     // octal code. The expansion must be quoted: unquoted, a lone backslash is
     // read as a pattern escape and matches nothing.
     'bs=$(printf "\\134");',
-    'nmcli -t -f NAME,TYPE connection show 2>/dev/null | sed -n "s/:wireguard$//p" |',
-    'while IFS= read -r escaped; do',
+    'vpn_get() {',
+    '  printf "%s" "$2" | awk -v k="$1" -F", " \'{',
+    '    p = k " = ";',
+    '    for (i = 1; i <= NF; i++) if (index($i, p) == 1) { print substr($i, length(p) + 1); exit }',
+    '  }\';',
+    '};',
+    'nmcli -t -f NAME,TYPE connection show 2>/dev/null |',
+    'while IFS= read -r line; do',
+    '  [ -z "$line" ] && continue;',
+    '  case "$line" in',
+    '    *:wireguard) t=wireguard; escaped=${line%:wireguard};;',
+    '    *:vpn) t=vpn; escaped=${line%:vpn};;',
+    '    *) continue;;',
+    '  esac;',
     '  n=${escaped//"$bs"/};',
-    '  peers=$(nmcli -g wireguard.peers connection show "$n" 2>/dev/null | head -1);',
-    '  ep=$(printf "%s" "$peers" | grep -oE "endpoint=[^ ]+" | head -1);',
-    '  ep=${ep#endpoint=}; ep=${ep//"$bs"/};',
-    '  ai=$(printf "%s" "$peers" | grep -oE "allowed-ips=[^ ]+" | head -1);',
-    '  ai=${ai#allowed-ips=}; ai=${ai//"$bs"/};',
-    '  printf "%s\\t%s\\t%s\\n" "$n" "$ep" "$ai";',
+    '  if [ "$t" = wireguard ]; then',
+    '    peers=$(nmcli -g wireguard.peers connection show "$n" 2>/dev/null | head -1);',
+    '    ep=$(printf "%s" "$peers" | grep -oE "endpoint=[^ ]+" | head -1);',
+    '    ep=${ep#endpoint=}; ep=${ep//"$bs"/};',
+    '    ai=$(printf "%s" "$peers" | grep -oE "allowed-ips=[^ ]+" | head -1);',
+    '    ai=${ai#allowed-ips=}; ai=${ai//"$bs"/};',
+    '    printf "wg\\t%s\\t%s\\t%s\\n" "$n" "$ep" "$ai";',
+    '    continue;',
+    '  fi;',
+    '  st=$(nmcli -g vpn.service-type connection show "$n" 2>/dev/null);',
+    '  case "$st" in *openvpn) ;; *) continue;; esac;',
+    '  data=$(nmcli -g vpn.data connection show "$n" 2>/dev/null);',
+    // networkmanager-openvpn stores "host\:port" in remote and often omits
+    // a separate port key. static-challenge itself may be absent; the
+    // challenge-response-flags=2 bit is what means "ask every time".
+    '  remote=$(vpn_get remote "$data");',
+    '  remote=${remote//"$bs"/};',
+    '  port=$(vpn_get port "$data");',
+    '  if [ -z "$port" ]; then',
+    '    suffix=${remote##*:};',
+    '    case "$suffix" in *[!0-9]*) ;; *)',
+    '      [ "$suffix" != "$remote" ] && port=$suffix && remote=${remote%:$port};;',
+    '    esac;',
+    '  fi;',
+    '  [ -z "$port" ] && port=1194;',
+    '  proto=udp; [ "$(vpn_get proto-tcp "$data")" = yes ] && proto=tcp;',
+    '  ask=0;',
+    '  [ -n "$(vpn_get static-challenge "$data")" ] && ask=1;',
+    '  [ "$(vpn_get password-flags "$data")" = 2 ] && ask=1;',
+    '  [ "$(vpn_get cert-pass-flags "$data")" = 2 ] && ask=1;',
+    '  [ "$(vpn_get challenge-response-flags "$data")" = 2 ] && ask=1;',
+    '  printf "ovpn\\t%s\\t%s\\t%s\\t%s\\t%s\\n" "$n" "$remote" "$port" "$proto" "$ask";',
     'done'
   ].join(" "))
 }
@@ -557,23 +620,41 @@ function parseNmProfiles(raw) {
   for (var i = 0; i < lines.length; i++) {
     if (!lines[i]) continue
     var parts = lines[i].split("\t")
-    if (!parts[0]) continue
-    var endpoint = String(parts[1] || "")
+    if (parts[0] === "ovpn") {
+      if (!parts[1]) continue
+      out.push({
+        backend: "openvpn",
+        origin: "nm",
+        name: parts[1],
+        remote: String(parts[2] || ""),
+        port: String(parts[3] || ""),
+        proto: String(parts[4] || "udp"),
+        hasAuth: true,
+        needsAsk: parts[5] === "1"
+      })
+      continue
+    }
+    if (parts[0] !== "wg" || !parts[1]) continue
+    var endpoint = String(parts[2] || "")
     var host = endpoint, port = ""
     var colon = endpoint.lastIndexOf(":")
     if (colon > 0) { host = endpoint.substring(0, colon); port = endpoint.substring(colon + 1) }
     out.push({
       backend: "wireguard",
       origin: "nm",
-      name: parts[0],
+      name: parts[1],
       remote: host,
       port: port,
       proto: "wireguard",
-      allowedIps: String(parts[2] || ""),
+      allowedIps: String(parts[3] || ""),
       hasAuth: true
     })
   }
   return out
+}
+
+function nmSecretsNeeded(text) {
+  return /no agents were available|secrets were required|no valid secrets|cannot ask without '--ask'|passwd-file|vpn secrets|secret agent/i.test(String(text || ""))
 }
 
 // OpenVPN 3 configs live in a D-Bus manager and are listed live and
@@ -717,15 +798,17 @@ function detectKindScript(path) {
          'else echo unknown; fi')
 }
 
-// NetworkManager imports a wg-quick config file directly, with no root helper
-// and no wireguard-tools — the kernel module is all it needs. That makes it the
-// path of least resistance for WireGuard, so the panel offers it first.
-// nmcli names the connection after the file, hence the rename.
-function nmImportScript(path, name) {
+// NetworkManager imports a wg-quick or .ovpn file directly, with no root
+// helper. WireGuard needs only the kernel module; OpenVPN needs the
+// networkmanager-openvpn plugin. nmcli names the connection after the file,
+// hence the rename. `kind` is only ever "wireguard" or "openvpn" — the
+// panel's detector, not the path.
+function nmImportScript(path, name, kind) {
+  var type = kind === "openvpn" ? "openvpn" : "wireguard"
   var f = shellQuote(path)
   var n = shellQuote(name)
   return capped([
-    'out=$(nmcli connection import type wireguard file ' + f + ' 2>&1) || {',
+    'out=$(nmcli connection import type ' + type + ' file ' + f + ' 2>&1) || {',
     '  printf "%s" "$out" >&2; exit 1;',
     '};',
     'id=$(printf "%s" "$out" | sed -n "s/^Connection .\\(.*\\). (.*/\\1/p");',
@@ -751,6 +834,7 @@ function mergeProfiles(cached, nmProfiles, stateRaw, backendName) {
       port: p.port || "",
       proto: p.proto || "",
       hasAuth: p.hasAuth === true,
+      needsAsk: p.needsAsk === true,
       allowedIps: p.allowedIps || "",
       state: parts[0] || "inactive",
       autostart: parts[1] === "enabled"

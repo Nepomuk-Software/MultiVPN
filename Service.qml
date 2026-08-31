@@ -9,11 +9,11 @@ import "Model.js" as Model
 // Privilege model: reading needs no root at all. Writing goes through pkexec
 // and the helper at /usr/local/bin/multivpn-admin, and the profile list
 // comes from that helper's cache so merely opening the panel never raises an
-// auth dialog. NetworkManager-owned WireGuard connections skip the helper
-// entirely — nmcli lists them unprivileged and polkit governs the rest — and
-// OpenVPN 3 works the same way: the openvpn3 CLI talks to its D-Bus session
-// manager as the user, so listing, importing, connecting and removing all
-// happen without the helper.
+// auth dialog. NetworkManager-owned WireGuard and OpenVPN connections skip
+// the helper entirely — nmcli lists them unprivileged and polkit governs the
+// rest — and OpenVPN 3 works the same way: the openvpn3 CLI talks to its
+// D-Bus session manager as the user, so listing, importing, connecting and
+// removing all happen without the helper.
 Item {
   id: root
 
@@ -119,6 +119,9 @@ Item {
   // This keeps the label honest until something connects.
   property bool lastAttemptFailed: false
   property string lastAttemptName: ""
+  property string lastAttemptOrigin: ""
+  // nmcli --ask is running in a terminal for an NM OpenVPN challenge / secret.
+  property bool nmAskPending: false
 
   readonly property bool connected: unitState === "active" && address !== ""
   readonly property bool failed: lastAttemptFailed && activeConnections.length === 0
@@ -171,6 +174,7 @@ Item {
   // connection currently in focus. OpenVPN 3's session manager reports the
   // server itself; there is no cipher to fetch.
   function refreshDetails() {
+    if (activeOrigin === "nm") return
     if ((activeBackend !== "openvpn" && activeBackend !== "openvpn3") || !activeName) return
     if (!detailProc.running) detailProc.running = true
   }
@@ -181,7 +185,8 @@ Item {
     if (!availabilityProc.running) availabilityProc.running = true
     if (!caps.canList) return
     if (!cacheProc.running) cacheProc.running = true
-    if ((filterBackend === "" || filterBackend === "wireguard") && !nmListProc.running)
+    if ((filterBackend === "" || filterBackend === "wireguard" || filterBackend === "openvpn")
+        && !nmListProc.running)
       nmListProc.running = true
     if ((filterBackend === "" || filterBackend === "openvpn3") && !ovpn3ListProc.running)
       ovpn3ListProc.running = true
@@ -221,18 +226,29 @@ Item {
   function connectProfile(p) {
     if (p.backend === "globalprotect") { launchGlobalProtect(p.name); return }
     if (p.backend === "openvpn3") { connectOvpn3(p.name); return }
+    lastAttemptName = p.name
+    lastAttemptOrigin = p.origin || ""
+    // static-challenge and "ask every time" secrets have no stored value.
+    // nmcli without a TTY cannot prompt; a session secret agent may, but
+    // Omarchy does not ship one, so this hands off to a terminal with --ask.
+    if (p.origin === "nm" && p.backend === "openvpn" && p.needsAsk) {
+      connectNmAsk(p.name)
+      return
+    }
     intent = "up"
     actionStatus = ""
     lastError = ""
-    lastAttemptName = p.name
     runAction(commandFor(p.backend, p.origin, p.name, "up"))
   }
 
   function disconnectProfile(p) {
     intent = "down"
     actionStatus = ""
+    nmAskPending = false
+    nmAskTimer.stop()
     // Which row is mid-flight, so its switch can show it.
     lastAttemptName = p.name
+    lastAttemptOrigin = p.origin || ""
     runAction(commandFor(p.backend, p.origin, p.name, "down"))
   }
 
@@ -248,6 +264,26 @@ Item {
   }
 
   function disconnect() { disconnectActive() }
+
+  function connectNmAsk(name) {
+    if (!bar) {
+      lastError = "No terminal available for the NetworkManager prompt"
+      lastAttemptFailed = true
+      intent = ""
+      return
+    }
+    intent = "up"
+    actionStatus = "Waiting for NetworkManager prompt…"
+    lastError = ""
+    lastAttemptFailed = false
+    lastAttemptName = name
+    lastAttemptOrigin = "nm"
+    nmAskPending = true
+    nmAskTimer.restart()
+    bar.run("omarchy-launch-floating-terminal-with-presentation nmcli --ask connection up id "
+            + Model.shellQuote(name))
+    actionFinished("launch", true, "opening terminal")
+  }
 
   function launchGlobalProtect(portal) {
     if (!bar) return
@@ -282,7 +318,7 @@ Item {
     if (forBackend === "openvpn3")
       return ["openvpn3", "session-manage", "-c", name, "--disconnect"]
 
-    if (forBackend === "wireguard" && useOrigin === "nm")
+    if (useOrigin === "nm")
       return ["nmcli", "connection", direction === "down" ? "down" : "up", "id", name]
 
     var unit = (forBackend === "wireguard" ? "wg-quick@" : "openvpn-client@") + name + ".service"
@@ -316,13 +352,20 @@ Item {
   // The other way in for WireGuard. Needs neither the root helper nor
   // wireguard-tools, which is why the panel offers it first.
   readonly property bool canImportToNm: availability.nmcli === "1"
+  readonly property bool canImportToNmOpenvpn: availability.nmcli === "1" && availability.nmopenvpn === "1"
   readonly property bool canImportToWgQuick: availability.wgquick === "1"
   // And the unprivileged way in for an .ovpn file.
   readonly property bool canImportToOvpn3: availability.openvpn3 === "1"
 
-  function importToNetworkManager(sourcePath, name) {
-    if (!canImportToNm) { lastError = "NetworkManager is not available"; return }
-    nmImport.command = ["bash", "-lc", Model.nmImportScript(sourcePath, name)]
+  function importToNetworkManager(sourcePath, name, kind) {
+    var type = kind === "openvpn" ? "openvpn" : "wireguard"
+    if (type === "openvpn" && !canImportToNmOpenvpn) {
+      lastError = "networkmanager-openvpn is not installed"; return
+    }
+    if (type === "wireguard" && !canImportToNm) {
+      lastError = "NetworkManager is not available"; return
+    }
+    nmImport.command = ["bash", "-lc", Model.nmImportScript(sourcePath, name, type)]
     actionStatus = "Importing into NetworkManager…"
     lastError = ""
     nmImport.running = true
@@ -440,6 +483,19 @@ Item {
     })
 
     if (activeConnections.length > 0) lastAttemptFailed = false
+    if (root.nmAskPending) {
+      for (var i = 0; i < activeConnections.length; i++) {
+        if (activeConnections[i].origin === "nm"
+            && activeConnections[i].name === root.lastAttemptName) {
+          root.intent = ""
+          root.actionStatus = ""
+          root.nmAskPending = false
+          root.lastAttemptFailed = false
+          nmAskTimer.stop()
+          break
+        }
+      }
+    }
     uptimeSeconds = Model.uptimeSeconds(since, Date.now())
 
     // Details are per connection. Drop them the moment the identity changes,
@@ -509,7 +565,7 @@ Item {
 
   Process {
     id: detailProc
-    command: ["bash", "-lc", Model.detailScript(root.activeBackend, root.activeName)]
+    command: ["bash", "-lc", Model.detailScript(root.activeBackend, root.activeName, root.activeOrigin)]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
@@ -543,7 +599,7 @@ Item {
 
   Process {
     id: nmListProc
-    command: ["bash", "-lc", Model.nmWireguardListScript()]
+    command: ["bash", "-lc", Model.nmListScript()]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.nmProfiles = Model.parseNmProfiles(text)
@@ -635,13 +691,21 @@ Item {
 
   // openvpn-client@ and wg-quick@ are both Type=notify/oneshot, so systemctl
   // blocks until the tunnel reports or fails — the exit code already is the
-  // result. `nmcli connection up` behaves the same way.
+  // result. `nmcli connection up` behaves the same way for stored secrets;
+  // a missing secret agent is retried in a terminal with --ask.
   Process {
     id: unitAction
     property var actionCommand: []
     command: actionCommand
+    stderr: StdioCollector { waitForEnd: true }
     onExited: function(code) {
       var wasUp = root.intent === "up"
+      var why = Model.clamp(stderr.text, Model.MAX_FIELD).trim()
+      if (code !== 0 && wasUp && root.lastAttemptOrigin === "nm"
+          && Model.nmSecretsNeeded(why)) {
+        connectNmAsk(root.lastAttemptName)
+        return
+      }
       root.intent = ""
       root.refresh()
       if (code === 0) {
@@ -652,8 +716,12 @@ Item {
       } else {
         if (wasUp) root.lastAttemptFailed = true
         root.actionFinished("unit", false, wasUp ? "connection failed" : "disconnect failed")
-        if (wasUp && root.activeBackend !== "wireguard") reasonProc.running = true
-        else root.lastError = wasUp ? "Connection failed" : "Disconnect failed"
+        if (wasUp && actionCommand[0] === "systemctl") {
+          reasonProc.running = true
+        } else {
+          var verb = wasUp ? "Connection failed" : "Disconnect failed"
+          root.lastError = verb + (why ? ": " + why : "")
+        }
       }
     }
   }
@@ -828,6 +896,30 @@ Item {
     repeat: true
     triggeredOnStart: true
     onTriggered: root.refreshProfiles()
+  }
+
+  // The terminal is not a process we own, so a cancelled prompt would leave
+  // the switch spinning. Two minutes matches the openvpn3 watch window.
+  Timer {
+    id: nmAskTimer
+    interval: 120000
+    repeat: false
+    onTriggered: {
+      if (!root.nmAskPending) return
+      var up = false
+      for (var i = 0; i < root.activeConnections.length; i++) {
+        if (root.activeConnections[i].origin === "nm"
+            && root.activeConnections[i].name === root.lastAttemptName)
+          up = true
+      }
+      root.nmAskPending = false
+      root.intent = ""
+      root.actionStatus = ""
+      if (!up) {
+        root.lastAttemptFailed = true
+        root.lastError = "Timed out waiting for NetworkManager prompt"
+      }
+    }
   }
 
   Component.onCompleted: {

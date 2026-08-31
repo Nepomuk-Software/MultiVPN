@@ -11,7 +11,7 @@ VPN; `allowMultiple` is on.
 
 | Backend | Connect / disconnect | Profile list | Autostart | Import | Credentials |
 |---|---|---|---|---|---|
-| **OpenVPN** (`openvpn-client@`) | yes | `/etc/openvpn/client` | yes | yes | yes |
+| **OpenVPN** (`openvpn-client@` and NetworkManager) | yes | `/etc/openvpn/client` + `nmcli` | yes | yes | systemd: stored; NM: prompt at connect |
 | **OpenVPN 3** (`openvpn3` D-Bus session manager) | yes | `openvpn3 configs-list` | no | yes | asked at session start — SSO opens the browser |
 | **WireGuard** (`wg-quick@` and NetworkManager) | yes | `/etc/wireguard` + `nmcli` | yes | yes | n/a — keys live in the config |
 | **GlobalProtect** (`gpclient`) | disconnect yes, connect hands off | no | no | no | n/a — SSO |
@@ -62,21 +62,22 @@ same for all three.
 - **Profiles** — every config the backend knows about with its state, click to
   connect or switch, per-profile autostart, credentials and removal. WireGuard
   lists `wg-quick` units and NetworkManager connections side by side and
-  switches each the right way.
+  switches each the right way. OpenVPN does the same for `openvpn-client@`
+  units and NetworkManager connections of type `vpn` (service-type openvpn).
 - **Import** — pick a file with the dialog or paste a path; the widget works
   out whether it is OpenVPN or WireGuard, suggests a name, and installs it.
   WireGuard configs can go into NetworkManager, which needs neither the root
   helper nor `wireguard-tools`, or into `/etc/wireguard` for `wg-quick`.
-  An `.ovpn` file likewise offers a choice once both are possible: into
-  OpenVPN 3's session manager (no root helper) or into `/etc/openvpn/client`
-  for `openvpn-client@`. GlobalProtect portals are added by host name instead,
-  since they are not files.
+  An `.ovpn` file offers up to three destinations: NetworkManager (no root
+  helper, and the path that can prompt for a one-time password), OpenVPN 3's
+  session manager, or `/etc/openvpn/client` for `openvpn-client@`.
+  GlobalProtect portals are added by host name instead, since they are not files.
 
 ## Requirements
 
 | Needs | Why |
 |---|---|
-| one of: `openvpn`, `openvpn3` (openvpn3-linux), `wireguard-tools` (for `wg-quick@`), NetworkManager ≥ 1.16 (for WireGuard connections), `globalprotect-openconnect` | whichever backend you use |
+| one of: `openvpn`, `openvpn3` (openvpn3-linux), `wireguard-tools` (for `wg-quick@`), NetworkManager ≥ 1.16 (for WireGuard connections), `networkmanager-openvpn` (for OpenVPN connections in NetworkManager), `globalprotect-openconnect` | whichever backend you use |
 | `bash`, `systemctl`, `ip`, `journalctl`, `cat` | reading status, addresses, routes and the connection log |
 | membership in a group that can read the system journal (usually `wheel`) | server endpoint and cipher come from the journal |
 | `zenity` | the file dialog for importing a config — optional, the path can also be pasted |
@@ -108,12 +109,13 @@ for it (see below).
 
 **Profile management is the exception.** `/etc/openvpn/client` is `750
 openvpn:network` and `/etc/wireguard` is root-only, so listing, importing or
-removing those configs needs root. NetworkManager-owned WireGuard connections
-skip all of this — `nmcli` lists them unprivileged and polkit governs the rest —
-and OpenVPN 3 configs skip it the same way through the `openvpn3` CLI. That is
-what `system/install.sh` sets up, and it is a deliberate, separate, manual step —
-`omarchy plugin add` never runs installers or `sudo`, and this plugin does not
-either. Without it the panel stays fully usable and the profile section says so.
+removing those configs needs root. NetworkManager-owned WireGuard and OpenVPN
+connections skip all of this — `nmcli` lists them unprivileged and polkit
+governs the rest — and OpenVPN 3 configs skip it the same way through the
+`openvpn3` CLI. That is what `system/install.sh` sets up, and it is a
+deliberate, separate, manual step — `omarchy plugin add` never runs installers
+or `sudo`, and this plugin does not either. Without it the panel stays fully
+usable and the profile section says so.
 
 The panel offers a **Set up profile management** button for this; it opens a
 terminal and runs the script with `sudo`, so you can read what it does before
@@ -183,12 +185,38 @@ is detected:
 
 Either way the connection then appears in the list and switches like any other.
 
+## Installing an OpenVPN config
+
+Three routes under **Add config** once an `.ovpn` file is detected. The
+unprivileged ones are offered first:
+
+- **NetworkManager** — no root helper. Needs the `networkmanager-openvpn`
+  package. This is the path that can prompt for a one-time password
+  (`static-challenge`, or a dynamic challenge from the server): a systemd
+  unit has no tty to type one into, and stored credentials cannot hold a
+  code that rotates. Equivalent by hand:
+  `nmcli connection import type openvpn file client.ovpn`
+  Connecting uses `nmcli connection up`. If the profile needs a challenge
+  or the session has no NetworkManager secret agent — Omarchy does not ship
+  one — the widget opens a terminal with `nmcli --ask` so you can type it.
+  Autostart is NetworkManager's own flag; on a challenge profile it will
+  fail at boot with nothing to type into.
+- **OpenVPN 3** — imports into the per-user session manager. No root helper.
+  Web-based auth opens the browser, as before.
+- **openvpn-client@** — installs into `/etc/openvpn/client`. Needs the root
+  helper. User/password can be stored; a rotating OTP cannot.
+
+A tun that NetworkManager brought up on its own is not guessed from the
+interface list: unified mode only reports connections it can name. Once the
+profile is listed as an NM row, the interface-derived bits (address, routes,
+uptime, throughput) attach to that row like any other.
+
 ## Where things are stored
 
 | Path | What |
 |---|---|
 | `/var/lib/multivpn/profiles.json` | OpenVPN and `wg-quick` profiles, written by the helper |
-| NetworkManager | WireGuard connections, read live via `nmcli` |
+| NetworkManager | WireGuard and OpenVPN connections, read live via `nmcli` |
 | openvpn3 configuration manager | OpenVPN 3 configs, read live via `openvpn3 configs-list` |
 | `~/.local/state/multivpn/portals.json` | GlobalProtect portals, owned by you, plain host names |
 
