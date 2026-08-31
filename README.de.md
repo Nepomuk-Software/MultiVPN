@@ -1,53 +1,34 @@
 # MultiVPN für Omarchy
 
-Ein Bar-Widget für alle VPNs der Maschine. Der **Unified-Modus** — die
-Voreinstellung — listet OpenVPN-Profile, OpenVPN-3-Configs,
+Ein Bar-Widget für alle VPNs der Maschine. Office-OpenVPN, Homelab-WireGuard
+und GlobalProtect stehen nebeneinander. Split-Tunnels bleiben stehen —
+eine Verbindung zu aktivieren baut die anderen nicht ab. Eine `.ovpn` oder
+`.conf` landet über **Add config** im Panel.
+
+![Vorschau](preview.png)
+
+## Installieren
+
+```bash
+omarchy plugin add https://github.com/Nepomuk-Software/MultiVPN.git --enable
+```
+
+Das reicht. Der **Unified-Modus** ist die Voreinstellung und braucht keine
+Konfiguration. Er listet OpenVPN-Profile, OpenVPN-3-Configs,
 WireGuard-Interfaces und GlobalProtect-Portale in einem Panel, folgt der
-jeweils verbundenen Lösung und wechselt per Klick. Knöpfe fügen eine Config
-oder ein Portal hinzu, ohne das Panel zu verlassen.
+jeweils verbundenen Lösung und wechselt per Klick.
 
-Wer lieber ein Icon pro VPN will, kann eine Instanz auf ein Backend festnageln;
-`allowMultiple` ist an.
+Wer lieber ein Icon pro VPN will, kann eine Instanz auf ein Backend festnageln
+(`allowMultiple` ist an):
 
-| Backend | Schalten | Profilliste | Autostart | Import | Zugangsdaten |
-|---|---|---|---|---|---|
-| **OpenVPN** (`openvpn-client@` und NetworkManager) | ja | `/etc/openvpn/client` + `nmcli` | ja | ja | systemd: gespeichert; NM: Prompt beim Verbinden |
-| **OpenVPN 3** (`openvpn3`-D-Bus-Sitzungsmanager) | ja | `openvpn3 configs-list` | nein | ja | beim Sitzungsstart — SSO öffnet den Browser |
-| **WireGuard** (`wg-quick@` und NetworkManager) | ja | `/etc/wireguard` + `nmcli` | ja | ja | entfällt — Schlüssel stehen in der Config |
-| **GlobalProtect** (`gpclient`) | Trennen ja, Verbinden wird übergeben | nein | nein | nein | entfällt — SSO |
-
-Der Unified-Modus meldet **alle** laufenden Verbindungen, nicht nur eine.
-Split-Tunnel vertragen sich problemlos — ein OpenVPN-Profil, das zwei
-Büro-Subnetze pusht, und ein WireGuard-Tunnel für ein paar /16er kommen sich
-nicht ins Gehege. Eine Verbindung zu aktivieren baut die anderen also nicht ab.
-Sind mehrere verbunden, wählt eine Leiste aus, welche der Detail- und
-Durchsatzblock beschreibt.
-
-Der einzige echte Konflikt ist die Default-Route, und die beanspruchen nur
-Full-Tunnel-Configs. Tun das zwei gleichzeitig, sagt das Panel es — statt es zu
-verhindern.
-
-OpenVPN 3 ist der andere OpenVPN-Stack und mit Absicht ein eigenes Backend —
-beide koexistieren auf einer Maschine, und das Panel entscheidet Fähigkeiten
-pro Zeile. Es ist ein D-Bus-Sitzungsmanager pro Benutzer, gesteuert über das
-unprivilegierte `openvpn3`-CLI: Auflisten, Importieren, Verbinden und
-Entfernen laufen also nie über den Root-Helfer oder dessen Cache — Polkit
-regelt die D-Bus-Dienste. Ein Profil mit Web-Login verbindet nicht einfach:
-das Widget startet die Sitzung, öffnet die ausgegebene Auth-URL im Browser
-und wartet, bis die Sitzung sich als verbunden meldet. Nach ~120 s hört es
-auf zu warten, lässt die Sitzung aber stehen — ein spät abgeschlossener
-Login verbindet also trotzdem. Autostart bleibt vorerst aus:
-`openvpn3-session@`-Units wollen root-eigene persistente Configs.
-
-GlobalProtect ist bewusst der dünne Fall: `gpclient` hat keinen Status-Befehl,
-keine systemd-Unit und einen interaktiven SSO-Login. Das Widget schaut also zu,
-kann trennen, und reicht das Verbinden an ein Terminal oder die Hersteller-GUI
-weiter. Alles, was am Tunnel-Interface hängt — Adresse, Routen, Laufzeit,
-Durchsatz — funktioniert für alle drei gleich.
+```bash
+omarchy bar set io.github.nepomuk-software.multivpn backend openvpn
+omarchy bar set io.github.nepomuk-software.multivpn profile home
+```
 
 *(English version: [README.md](README.md) — die maßgebliche Fassung.)*
 
-![Vorschau](preview.png)
+## Was du bekommst
 
 - **Bar-Icon** — gedimmt wenn getrennt, normal wenn verbunden, pulsierend
   während eines Schaltvorgangs. Optional mit Durchsatz daneben.
@@ -74,6 +55,46 @@ Durchsatz — funktioniert für alle drei gleich.
   den OpenVPN-3-Sitzungsmanager oder `/etc/openvpn/client` für
   `openvpn-client@`. GlobalProtect-Portale kommen stattdessen als Hostname
   dazu, sie sind ja keine Dateien.
+- **Kein Root** für Status, Durchsatz, NetworkManager-Verbindungen und
+  OpenVPN 3. Dateien unter `/etc/openvpn/client` und `/etc/wireguard` sind die
+  Ausnahme; das Panel sagt das und bietet eine einmalige Einrichtung an.
+
+## Backends
+
+| Backend | Schalten | Profilliste | Autostart | Import | Zugangsdaten |
+|---|---|---|---|---|---|
+| **OpenVPN** (`openvpn-client@` und NetworkManager) | ja | `/etc/openvpn/client` + `nmcli` | ja | ja | systemd: gespeichert; NM: Prompt beim Verbinden |
+| **OpenVPN 3** (`openvpn3`-D-Bus-Sitzungsmanager) | ja | `openvpn3 configs-list` | nein | ja | beim Sitzungsstart — SSO öffnet den Browser |
+| **WireGuard** (`wg-quick@` und NetworkManager) | ja | `/etc/wireguard` + `nmcli` | ja | ja | entfällt — Schlüssel stehen in der Config |
+| **GlobalProtect** (`gpclient`) | Trennen ja, Verbinden wird übergeben | nein | nein | nein | entfällt — SSO |
+
+Der Unified-Modus meldet **alle** laufenden Verbindungen, nicht nur eine.
+Split-Tunnel vertragen sich problemlos — ein OpenVPN-Profil, das zwei
+Büro-Subnetze pusht, und ein WireGuard-Tunnel für ein paar /16er kommen sich
+nicht ins Gehege. Sind mehrere verbunden, wählt eine Leiste aus, welche der
+Detail- und Durchsatzblock beschreibt.
+
+Der einzige echte Konflikt ist die Default-Route, und die beanspruchen nur
+Full-Tunnel-Configs. Tun das zwei gleichzeitig, sagt das Panel es — statt es zu
+verhindern.
+
+OpenVPN 3 ist der andere OpenVPN-Stack und mit Absicht ein eigenes Backend —
+beide koexistieren auf einer Maschine, und das Panel entscheidet Fähigkeiten
+pro Zeile. Es ist ein D-Bus-Sitzungsmanager pro Benutzer, gesteuert über das
+unprivilegierte `openvpn3`-CLI: Auflisten, Importieren, Verbinden und
+Entfernen laufen also nie über den Root-Helfer oder dessen Cache — Polkit
+regelt die D-Bus-Dienste. Ein Profil mit Web-Login verbindet nicht einfach:
+das Widget startet die Sitzung, öffnet die ausgegebene Auth-URL im Browser
+und wartet, bis die Sitzung sich als verbunden meldet. Nach ~120 s hört es
+auf zu warten, lässt die Sitzung aber stehen — ein spät abgeschlossener
+Login verbindet also trotzdem. Autostart bleibt vorerst aus:
+`openvpn3-session@`-Units wollen root-eigene persistente Configs.
+
+GlobalProtect ist bewusst der dünne Fall: `gpclient` hat keinen Status-Befehl,
+keine systemd-Unit und einen interaktiven SSO-Login. Das Widget schaut also zu,
+kann trennen, und reicht das Verbinden an ein Terminal oder die Hersteller-GUI
+weiter. Alles, was am Tunnel-Interface hängt — Adresse, Routen, Laufzeit,
+Durchsatz — funktioniert für alle vier gleich.
 
 ## Voraussetzungen
 
@@ -84,17 +105,10 @@ Je nach Backend `openvpn`, `openvpn3` (openvpn3-linux), `wireguard-tools`
 `pkexec` und `python3`. Server und Cipher kommen aus dem Journal — ohne
 Leserechte darauf steht dort schlicht `—`.
 
-## Installieren
-
-```bash
-omarchy plugin add https://github.com/Nepomuk-Software/MultiVPN.git --enable
-```
-
 ## Privilegien-Grenze
 
-**Alles Lesende läuft ohne erhöhte Rechte.** Zustand, Durchsatz und Details
-kommen aus unprivilegierten Abfragen. Schalten geht über `systemctl start/stop`
-— dafür fragt polkit, sofern keine Regel existiert.
+**Zustand, Durchsatz und Details laufen ohne erhöhte Rechte.** Schalten geht
+über `systemctl start/stop` — dafür fragt polkit, sofern keine Regel existiert.
 
 **Ausnahme ist die Profilverwaltung.** `/etc/openvpn/client` ist
 `750 openvpn:network`, `/etc/wireguard` gehört root allein — Auflisten,

@@ -1,56 +1,39 @@
 # MultiVPN for Omarchy
 
-One bar widget for every VPN on the machine. **Unified mode** — the default —
-lists OpenVPN profiles, OpenVPN 3 configs, WireGuard interfaces and
-GlobalProtect portals in a single panel, follows whichever one is connected,
-and switches between them with a click. Buttons add a config or a portal
-without leaving the panel.
-
-You can also pin an instance to a single backend if you prefer one icon per
-VPN; `allowMultiple` is on.
-
-| Backend | Connect / disconnect | Profile list | Autostart | Import | Credentials |
-|---|---|---|---|---|---|
-| **OpenVPN** (`openvpn-client@` and NetworkManager) | yes | `/etc/openvpn/client` + `nmcli` | yes | yes | systemd: stored; NM: prompt at connect |
-| **OpenVPN 3** (`openvpn3` D-Bus session manager) | yes | `openvpn3 configs-list` | no | yes | asked at session start — SSO opens the browser |
-| **WireGuard** (`wg-quick@` and NetworkManager) | yes | `/etc/wireguard` + `nmcli` | yes | yes | n/a — keys live in the config |
-| **GlobalProtect** (`gpclient`) | disconnect yes, connect hands off | no | no | no | n/a — SSO |
-
-Unified mode reports **every** connection that is up, not just one. Split-tunnel
-VPNs coexist without trouble — an OpenVPN profile pushing two office subnets and
-a WireGuard tunnel routing a few /16s do not interfere at all — so activating one
-does not take the others down. When more than one is connected, a selector picks
-which one the detail and throughput block describes.
-
-The one real conflict is the default route, and only full-tunnel configs claim
-it. If two connections do, the panel says so rather than trying to prevent it.
-
-OpenVPN 3 is the other OpenVPN stack and deliberately a separate backend — the
-two coexist on one machine and the panel decides capabilities per row. It is a
-per-user D-Bus session manager driven by the unprivileged `openvpn3` CLI, so
-listing, importing, connecting and removing configs never touch the root helper
-or its cache; polkit governs the D-Bus services instead. A profile with
-web-based auth does not just connect: the widget starts the session, opens the
-auth URL it prints in your browser, and watches until the session reports
-connected. It stops watching after ~120 s but leaves the session standing, so
-finishing the login late still connects. Autostart is off for now —
-`openvpn3-session@` units want root-owned persistent configs.
-
-GlobalProtect is deliberately the thin one. `gpclient` has no status command,
-no systemd unit and an interactive SSO login, so the widget watches it, can take
-it down, and hands connecting to a terminal or the vendor GUI. Everything that
-comes off the tunnel interface — address, routes, uptime, throughput — works the
-same for all three.
-
-*(Deutsche Fassung: [README.de.md](README.de.md).)*
+One bar widget for every VPN on the machine. Work OpenVPN, homelab WireGuard
+and GlobalProtect sit side by side. Split tunnels stay up together — connecting
+one does not take the others down. Drop a `.ovpn` or `.conf` on **Add config**
+to import.
 
 ![Preview](preview.png)
 
+## Install
+
+```bash
+omarchy plugin add https://github.com/Nepomuk-Software/MultiVPN.git --enable
+```
+
+That is enough. **Unified mode** is the default and needs no configuration. It
+lists OpenVPN profiles, OpenVPN 3 configs, WireGuard interfaces and GlobalProtect
+portals in a single panel, follows whichever one is connected, and switches
+between them with a click.
+
+To pin an instance to a single backend instead (`allowMultiple` is on):
+
+```bash
+omarchy bar set io.github.nepomuk-software.multivpn backend openvpn
+omarchy bar set io.github.nepomuk-software.multivpn profile home
+```
+
+*(Deutsche Fassung: [README.de.md](README.de.md).)*
+
+## What you get
+
 - **Bar icon** — dimmed while down, solid while up, pulsing during a transition.
   Optionally shows the current rate next to the icon.
-- **One switch per VPN**, in its own row. There is no global switch: with
-  several connections possible at once, a single toggle at the top would have to
-  pick one silently.
+- **One switch per VPN**, in its own row. There is no global switch: with several
+  connections possible at once, a single toggle at the top would have to pick
+  one silently.
 - **Connection** — server endpoint, protocol and port, cipher, tunnel IP,
   interface and MTU, uptime, pushed routes.
 - **Throughput** — a sparkline over the last 60 samples plus current rate and
@@ -72,6 +55,44 @@ same for all three.
   helper, and the path that can prompt for a one-time password), OpenVPN 3's
   session manager, or `/etc/openvpn/client` for `openvpn-client@`.
   GlobalProtect portals are added by host name instead, since they are not files.
+- **No root required** for status, throughput, NetworkManager connections and
+  OpenVPN 3. Listing files under `/etc/openvpn/client` and `/etc/wireguard` is
+  the exception; the panel says so and offers a one-time setup.
+
+## Backends
+
+| Backend | Connect / disconnect | Profile list | Autostart | Import | Credentials |
+|---|---|---|---|---|---|
+| **OpenVPN** (`openvpn-client@` and NetworkManager) | yes | `/etc/openvpn/client` + `nmcli` | yes | yes | systemd: stored; NM: prompt at connect |
+| **OpenVPN 3** (`openvpn3` D-Bus session manager) | yes | `openvpn3 configs-list` | no | yes | asked at session start — SSO opens the browser |
+| **WireGuard** (`wg-quick@` and NetworkManager) | yes | `/etc/wireguard` + `nmcli` | yes | yes | n/a — keys live in the config |
+| **GlobalProtect** (`gpclient`) | disconnect yes, connect hands off | no | no | no | n/a — SSO |
+
+Unified mode reports **every** connection that is up, not just one. Split-tunnel
+VPNs coexist without trouble — an OpenVPN profile pushing two office subnets and
+a WireGuard tunnel routing a few /16s do not interfere at all. When more than
+one is connected, a selector picks which one the detail and throughput block
+describes.
+
+The one real conflict is the default route, and only full-tunnel configs claim
+it. If two connections do, the panel says so rather than trying to prevent it.
+
+OpenVPN 3 is the other OpenVPN stack and deliberately a separate backend — the
+two coexist on one machine and the panel decides capabilities per row. It is a
+per-user D-Bus session manager driven by the unprivileged `openvpn3` CLI, so
+listing, importing, connecting and removing configs never touch the root helper
+or its cache; polkit governs the D-Bus services instead. A profile with
+web-based auth does not just connect: the widget starts the session, opens the
+auth URL it prints in your browser, and watches until the session reports
+connected. It stops watching after ~120 s but leaves the session standing, so
+finishing the login late still connects. Autostart is off for now —
+`openvpn3-session@` units want root-owned persistent configs.
+
+GlobalProtect is deliberately the thin one. `gpclient` has no status command,
+no systemd unit and an interactive SSO login, so the widget watches it, can take
+it down, and hands connecting to a terminal or the vendor GUI. Everything that
+comes off the tunnel interface — address, routes, uptime, throughput — works the
+same for all four.
 
 ## Requirements
 
@@ -86,26 +107,11 @@ same for all three.
 Reading the journal is optional in practice: without it the panel simply shows
 `—` for server and cipher.
 
-## Install
-
-```bash
-omarchy plugin add https://github.com/Nepomuk-Software/MultiVPN.git --enable
-```
-
-That is enough — unified mode needs no configuration. To pin an instance to one
-backend instead:
-
-```bash
-omarchy bar set io.github.nepomuk-software.multivpn backend openvpn
-omarchy bar set io.github.nepomuk-software.multivpn profile work
-```
-
 ## Privilege boundary
 
-**Everything above works with no elevated privileges.** Status, throughput and
-connection details come from unprivileged reads. Bringing the tunnel up and down
-uses `systemctl start/stop`, which polkit will ask about unless you have a rule
-for it (see below).
+**Status, throughput and connection details work with no elevated privileges.**
+Bringing the tunnel up and down uses `systemctl start/stop`, which polkit will
+ask about unless you have a rule for it (see below).
 
 **Profile management is the exception.** `/etc/openvpn/client` is `750
 openvpn:network` and `/etc/wireguard` is root-only, so listing, importing or
