@@ -168,7 +168,20 @@ Item {
 
   // ── Actions ──────────────────────────────────────────────────────────────
 
-  function refresh() { if (!statusProc.running) statusProc.running = true }
+  // An action completing while its probe is still in flight must not lose the
+  // update: the in-flight probe's snapshot predates the action, and dropping
+  // the request leaves the bar and the row switches on the state from before
+  // the click until the next cadence tick — the tail end of the "one click
+  // behind" behaviour. Queue one re-run and deliver it when the probe exits.
+  property bool statusRequeued: false
+  property bool detailsRequeued: false
+  property bool profileStatesRequeued: false
+
+  function refresh() {
+    if (statusProc.running) { statusRequeued = true; return }
+    statusRequeued = false
+    statusProc.running = true
+  }
 
   // Server and cipher only exist in OpenVPN's journal, and only for the
   // connection currently in focus. OpenVPN 3's session manager reports the
@@ -176,7 +189,9 @@ Item {
   function refreshDetails() {
     if (activeOrigin === "nm") return
     if ((activeBackend !== "openvpn" && activeBackend !== "openvpn3") || !activeName) return
-    if (!detailProc.running) detailProc.running = true
+    if (detailProc.running) { detailsRequeued = true; return }
+    detailsRequeued = false
+    detailProc.running = true
   }
 
   function refreshProfiles() {
@@ -191,7 +206,8 @@ Item {
     if ((filterBackend === "" || filterBackend === "openvpn3") && !ovpn3ListProc.running)
       ovpn3ListProc.running = true
     if (unified && !portalLoad.running) portalLoad.running = true
-    if (!profileStateProc.running) profileStateProc.running = true
+    if (profileStateProc.running) profileStatesRequeued = true
+    else profileStateProc.running = true
   }
 
   function toggle() {
@@ -207,9 +223,24 @@ Item {
     if (backendName === "globalprotect")
       return profile ? { backend: "globalprotect", origin: "process",
                          name: profile, state: "inactive" } : null
-    if (!profile) return null
-    for (var i = 0; i < profiles.length; i++)
-      if (profiles[i].name === profile) return profiles[i]
+    // A configured favourite wins while the profile still exists.
+    if (profile) {
+      for (var i = 0; i < profiles.length; i++)
+        if (profiles[i].name === profile) return profiles[i]
+    }
+    // No favourite configured — the layout default — or the configured name no
+    // longer exists. Returning null here used to make the bar icon and the
+    // connect IPC routes silently do nothing until a favourite was set, which
+    // read as the widget ignoring clicks. Prefer the profile this widget last
+    // acted on (that is what right-click's "retry" points at), then the first
+    // profile that is not up. When everything is up there is nothing to
+    // connect to, so null is the honest answer.
+    if (lastAttemptName) {
+      for (var j = 0; j < profiles.length; j++)
+        if (profiles[j].name === lastAttemptName) return profiles[j]
+    }
+    for (var k = 0; k < profiles.length; k++)
+      if (profiles[k].state !== "active") return profiles[k]
     return null
   }
 
@@ -561,6 +592,12 @@ Item {
     id: statusProc
     command: ["bash", "-lc", Model.statusScript()]
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applyStatus(text) }
+    onExited: function() {
+      if (root.statusRequeued) {
+        root.statusRequeued = false
+        statusProc.running = true
+      }
+    }
   }
 
   Process {
@@ -572,6 +609,12 @@ Item {
         var kv = Model.parseKeyValues(text)
         root.server = kv.server || ""
         root.cipher = kv.cipher || ""
+      }
+    }
+    onExited: function() {
+      if (root.detailsRequeued) {
+        root.detailsRequeued = false
+        detailProc.running = true
       }
     }
   }
@@ -622,6 +665,12 @@ Item {
         return root.filterBackend === "" || (p.backend || "openvpn") === root.filterBackend
       }))]
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.profileStates = text }
+    onExited: function() {
+      if (root.profileStatesRequeued) {
+        root.profileStatesRequeued = false
+        profileStateProc.running = true
+      }
+    }
   }
 
   Process {
@@ -708,6 +757,12 @@ Item {
       }
       root.intent = ""
       root.refresh()
+      // Row switches read the profile-state probe, which the cadence timer
+      // only refreshes while the popup is open. Without this, a connect or
+      // disconnect from the bar menu leaves every switch showing the state
+      // from before the action until the next poll — the "one click behind"
+      // behaviour.
+      root.refreshProfiles()
       if (code === 0) {
         root.actionStatus = ""
         root.lastError = ""
@@ -757,6 +812,7 @@ Item {
     onExited: function(code) {
       root.intent = ""
       root.refresh()
+      root.refreshProfiles()
       if (code === 0) {
         root.actionStatus = ""
         root.lastError = ""
@@ -915,6 +971,7 @@ Item {
       root.nmAskPending = false
       root.intent = ""
       root.actionStatus = ""
+      root.refreshProfiles()
       if (!up) {
         root.lastAttemptFailed = true
         root.lastError = "Timed out waiting for NetworkManager prompt"
