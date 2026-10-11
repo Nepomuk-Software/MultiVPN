@@ -527,14 +527,32 @@ Panel {
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
               }
-              Text {
-                textFormat: Text.PlainText
+              // A split tunnel can push a hundred routes, and as one block they
+              // pushed everything below — the connection list included — past
+              // the bottom of the panel. They scroll on their own now. A short
+              // list keeps its natural height and never becomes interactive,
+              // so it does not swallow the wheel on its way to the panel.
+              Flickable {
                 width: parent.width
-                text: vpn.routes.join("  ·  ")
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
+                height: Math.min(routesText.implicitHeight, Style.space(120))
+                contentWidth: width
+                contentHeight: routesText.implicitHeight
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                flickableDirection: Flickable.VerticalFlick
+                interactive: contentHeight > height
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                Text {
+                  id: routesText
+                  textFormat: Text.PlainText
+                  width: parent.width
+                  text: vpn.routes.join("  ·  ")
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  wrapMode: Text.WordWrap
+                }
               }
             }
           }
