@@ -396,15 +396,16 @@ Item {
     if (!clean) return
     for (var i = 0; i < portals.length; i++)
       if (portals[i] === clean) return
-    savePortals(portals.concat([clean]))
+    savePortals(portals.concat([clean]), "add")
   }
 
   function removePortal(name) {
-    savePortals(portals.filter(function(p) { return p !== name }))
+    savePortals(portals.filter(function(p) { return p !== name }), "remove")
   }
 
-  function savePortals(list) {
+  function savePortals(list, label) {
     portals = list
+    portalSave.label = label || "portals"
     portalSave.command = ["bash", "-lc",
       "mkdir -p " + Model.shellQuote(portalsPath.replace(/\/[^\/]*$/, "")) +
       " && printf '%s' " + Model.shellQuote(JSON.stringify(list)) +
@@ -680,7 +681,20 @@ Item {
 
   Process {
     id: portalSave
-    onExited: function(code) { if (code !== 0) root.lastError = "Could not save portal list" }
+    property string label: "portals"
+    // The portal list is the one profile store with neither the helper nor
+    // nmcli behind it, so this is the only place its outcome can be reported —
+    // and the panel's remove confirmation waits for exactly that report before
+    // it closes. Without it the prompt stayed up after the row was gone, and a
+    // second Remove rewrote the same list to no visible effect.
+    onExited: function(code) {
+      if (code === 0) {
+        root.actionFinished(label, true, label === "remove" ? "portal removed" : "portal added")
+      } else {
+        root.lastError = "Could not save portal list"
+        root.actionFinished(label, false, root.lastError)
+      }
+    }
   }
 
   Process {
